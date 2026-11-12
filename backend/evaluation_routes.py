@@ -35,11 +35,18 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
     @router.post('/evaluation-runs', status_code=201)
     def prepare(payload: PrepareEvaluation):
         target_repo = repo()  # Capture workspace storage before doing any work.
-        request_hash = fingerprint(payload.model_dump(mode='json', exclude={'evaluation_type'} if payload.evaluation_type is None else set()))
+        defaults = store.system_settings()
+        budget_values = payload.budget.model_dump()
+        if 'max_requests' not in payload.budget.model_fields_set:
+            budget_values['max_requests'] = defaults.get('evaluation_max_requests', 500)
+        if 'max_output_tokens' not in payload.budget.model_fields_set:
+            budget_values['max_output_tokens'] = defaults.get('evaluation_max_output_tokens', 500000)
+        request_values = payload.model_dump(mode='json', exclude={'evaluation_type'} if payload.evaluation_type is None else set())
+        request_values['budget'] = budget_values
+        request_hash = fingerprint(request_values)
         existing = target_repo.existing(payload.idempotency_key, request_hash)
         if existing:
             return public(existing)
-        defaults = store.system_settings()
         engine = payload.scoring_engine or defaults.get('evaluation_scoring_engine', 'deepeval')
         if any(METRICS[metric.id]['engine'] not in {engine, 'rules'} for metric in payload.metrics):
             raise HTTPException(400, '指标必须属于所选评分引擎')
@@ -54,7 +61,7 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
                         documents=['configuration validation'] if benchmark == 'reranker' else []))
             snapshot = model_evidence(config, selection, benchmark)
             if scoring:
-                snapshot['inference_parameters'] = generation_parameters(config, _key, payload.budget.judge_max_tokens)
+                snapshot['inference_parameters'] = generation_parameters(config, _key, budget_values['judge_max_tokens'])
             return snapshot
 
         if payload.sample_kinds != ['single_turn']:
@@ -85,7 +92,7 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
         metrics = [{**selected[metric.id], **metric.model_dump(exclude={'id','threshold'}), 'threshold': {**selected[metric.id]['threshold'], 'value': metric.threshold}}
                    for metric in payload.metrics]
         return public(target_repo.prepare(payload, request_hash, {'target': target, 'result_judge': judge_snapshot,
-                                  'scoring_engine': scoring_engine(engine), 'metrics': metrics, 'budget': payload.budget.model_dump(),
+                                  'scoring_engine': scoring_engine(engine), 'metrics': metrics, 'budget': budget_values,
                                   'evaluation_type':payload.evaluation_type or evaluation_type({'target':target}),
                                   'sample_kinds':payload.sample_kinds, 'template': payload.template, 'use_cache': payload.use_cache}))
 

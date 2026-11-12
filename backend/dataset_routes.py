@@ -44,6 +44,8 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         if prompt == LEGACY_DEFAULT_PROMPT:
             prompt = None
         return {'max_concurrent': value.get('dataset_max_concurrent', 3),
+                'evaluation_max_requests': value.get('evaluation_max_requests', 500),
+                'evaluation_max_output_tokens': value.get('evaluation_max_output_tokens', 500000),
                 'default_llm': value.get('dataset_default_llm'),
                 'default_embedding_model': value.get('dataset_default_embedding_model'),
                 'default_critic_llm': value.get('dataset_default_critic_llm'),
@@ -142,6 +144,10 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         updates = {}
         if 'max_concurrent' in payload.model_fields_set:
             updates['dataset_max_concurrent'] = payload.max_concurrent
+        if 'evaluation_max_requests' in payload.model_fields_set:
+            updates['evaluation_max_requests'] = payload.evaluation_max_requests
+        if 'evaluation_max_output_tokens' in payload.model_fields_set:
+            updates['evaluation_max_output_tokens'] = payload.evaluation_max_output_tokens
         if 'default_llm' in payload.model_fields_set:
             updates['dataset_default_llm'] = selection
         if 'default_embedding_model' in payload.model_fields_set:

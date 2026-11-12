@@ -42,7 +42,7 @@ export const datasetApi = {
   saveItem: (id: string, itemId: string | undefined, value: unknown) => call<Dataset>(`datasets/${id}/items${itemId ? `/${itemId}` : ''}`, itemId ? 'PUT' : 'POST', value),
   deleteItem: (id: string, itemId: string) => call<void>(`datasets/${id}/items/${itemId}`, 'DELETE'),
   settings: () => call<DatasetSettings>('dataset-settings'),
-  saveSettings: (value: { max_concurrent?: number; default_llm?: LlmSelection | null; default_embedding_model?: LlmSelection | null; default_critic_llm?: LlmSelection | null; prompt?: string | null; critic_prompt?: string | null; default_judge_llm?: LlmSelection | null; default_reranker?: LlmSelection | null; scoring_engine?: 'deepeval' | 'ragas'; judge_prompt?: string | null }) => call<DatasetSettings>('dataset-settings', 'PUT', value),
+  saveSettings: (value: { max_concurrent?: number; evaluation_max_requests?: number; evaluation_max_output_tokens?: number; default_llm?: LlmSelection | null; default_embedding_model?: LlmSelection | null; default_critic_llm?: LlmSelection | null; prompt?: string | null; critic_prompt?: string | null; default_judge_llm?: LlmSelection | null; default_reranker?: LlmSelection | null; scoring_engine?: 'deepeval' | 'ragas'; judge_prompt?: string | null }) => call<DatasetSettings>('dataset-settings', 'PUT', value),
   export: async (id: string, format: 'json' | 'jsonl' | 'csv' = 'json', ids?: string[]) => {
     const response = await authenticatedFetch(`/api/datasets/${id}/export?format=${format}`, ids ? {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),

@@ -11,6 +11,11 @@ const english: Record<string, string> = {
   "默认重排模型（Reranker）": "Default reranker model",
   "重排模型说明": "About the reranker",
   "默认使用空间设置中的重排模型，可为本次评测单独更换。多选知识库时必须选择重排模型；单库未选择时使用知识库的召回分数。": "The workspace reranker is selected by default and can be changed for this evaluation. Multiple knowledge bases require a reranker. A single knowledge base without one uses its retrieval scores.",
+  "空间默认的单次评测请求总数上限，新建评测时自动使用。": "Workspace default maximum requests for one evaluation. New evaluations use it automatically.",
+  "空间默认的单次评测输出 token 预留预算，新建评测时自动使用。": "Workspace default output token reservation for one evaluation. New evaluations use it automatically.",
+  "请求和 token 预算由空间设置统一管理。": "Request and token budgets are managed in workspace settings.",
+  "请输入 1–100000 之间的整数。": "Enter an integer from 1 to 100000.",
+  "请输入 256–100000000 之间的整数。": "Enter an integer from 256 to 100000000.",
   "未选择重排模型": "No reranker selected",
   "原重排模型已失效，请重新选择": "The previous reranker is unavailable. Choose another model.",
   "多路召回需要选择重排模型，或在空间设置中配置默认重排模型": "Select a reranker for retrieval fusion or configure a default in workspace settings.",
@@ -1069,7 +1074,7 @@ Object.assign(english, {
   '重新加载':'Reload',
 });
 
-Object.assign(english, {'运行范围说明':'About sample scope','试跑最多使用所选条数；全部样本仍受高级设置中的预算限制。':'Trials use up to the selected number of samples. All-sample runs remain subject to the budgets in advanced settings.'});
+Object.assign(english, {'运行范围说明':'About sample scope','试跑最多使用所选条数；全部样本仍受空间设置中的预算限制。':'Trials use up to the selected number of samples. All-sample runs remain subject to the budgets in workspace settings.'});
 
 Object.assign(english, {
   'RAG 数据集':'RAG datasets',

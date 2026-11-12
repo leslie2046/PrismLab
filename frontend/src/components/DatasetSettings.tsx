@@ -31,6 +31,8 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const [scoringEngine, setScoringEngine] = useState<'deepeval' | 'ragas'>('deepeval');
   const [judgePrompt, setJudgePrompt] = useState('');
   const [defaultJudgePrompt, setDefaultJudgePrompt] = useState('');
+  const [evaluationMaxRequests, setEvaluationMaxRequests] = useState('500');
+  const [evaluationMaxOutputTokens, setEvaluationMaxOutputTokens] = useState('500000');
   const [prompt, setPrompt] = useState('');
   const [defaultPrompt, setDefaultPrompt] = useState('');
   const [criticPrompt, setCriticPrompt] = useState('');
@@ -52,6 +54,8 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const staleCritic = !!catalog && !!critic && !choices.some(choice => choice.value === critic);
   const disabled = readOnly || !catalog || !loaded || loading || busy !== null;
   const invalidConcurrency = !/^\d+$/.test(concurrency) || Number(concurrency) < 1 || Number(concurrency) > 10;
+  const invalidEvaluationMaxRequests = !/^\d+$/.test(evaluationMaxRequests) || Number(evaluationMaxRequests) < 1 || Number(evaluationMaxRequests) > 100000;
+  const invalidEvaluationMaxOutputTokens = !/^\d+$/.test(evaluationMaxOutputTokens) || Number(evaluationMaxOutputTokens) < 256 || Number(evaluationMaxOutputTokens) > 100000000;
   const changed = (which: SettingsSection) => { setSaved(value => ({ ...value, [which]: false })); setErrors(value => ({ ...value, [which]: '' })); };
   useEffect(() => {
     let active = true;
@@ -62,11 +66,13 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
       setPrompt(value.prompt); setDefaultPrompt(value.default_prompt); setCriticPrompt(value.critic_prompt); setDefaultCriticPrompt(value.default_critic_prompt);
       setJudge(selectionValue(value.default_judge_llm)); setScoringEngine(value.scoring_engine); setJudgePrompt(value.judge_prompt); setDefaultJudgePrompt(value.default_judge_prompt); setLoaded(true);
       setReranker(selectionValue(value.default_reranker || null));
+      setEvaluationMaxRequests(String(value.evaluation_max_requests ?? 500));
+      setEvaluationMaxOutputTokens(String(value.evaluation_max_output_tokens ?? 500000));
     } }).catch(reason => { if (active) setLoadError(reason.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [reload]);
   async function save(which: SettingsSection) {
-    if (disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || !judgePrompt.trim())) return;
+    if (disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())) return;
     setBusy(which); changed(which);
     try {
       await datasetApi.saveSettings(which === 'generation' ? {
@@ -77,6 +83,8 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
         prompt: prompt === defaultPrompt ? null : prompt,
         critic_prompt: criticPrompt === defaultCriticPrompt ? null : criticPrompt,
       } : {
+        evaluation_max_requests: Number(evaluationMaxRequests),
+        evaluation_max_output_tokens: Number(evaluationMaxOutputTokens),
         default_judge_llm: judge ? JSON.parse(judge) : null,
         default_reranker: reranker ? JSON.parse(reranker) : null,
         scoring_engine: scoringEngine,
@@ -90,7 +98,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
     {(loading || !catalog) && <p className="workspace-muted" role="status">{t('加载中…')}</p>}
     {loadError && <div className="alert" role="alert">{loadError}<button type="button" className="ghost compact" disabled={loading} onClick={() => setReload(value => value + 1)}>{t('重试')}</button></div>}
     {errors[which] && <div className="alert" role="alert">{errors[which]}</div>}
-    <div className="space-settings-footer">{!readOnly && <button className="primary compact" disabled={disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || !judgePrompt.trim())}><Save aria-hidden="true" />{t(busy === which ? '保存中…' : '保存配置')}</button>}{saved[which] && <span className="success-text" role="status">{t('空间配置已保存')}</span>}</div>
+    <div className="space-settings-footer">{!readOnly && <button className="primary compact" disabled={disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())}><Save aria-hidden="true" />{t(busy === which ? '保存中…' : '保存配置')}</button>}{saved[which] && <span className="success-text" role="status">{t('空间配置已保存')}</span>}</div>
   </>;
   return <>
     <section className="panel system-settings-panel dataset-settings-panel" role="tabpanel" id="space-panel-generation" aria-labelledby="space-tab-generation" hidden={section !== 'generation'}>
@@ -136,6 +144,10 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
           <SearchableSelect label={t('默认重排模型（Reranker）')} language={language} value={reranker} disabled={disabled} onChange={value => { setReranker(value); changed('evaluation'); }} options={[{value:'',label:t('未设置（准备评测时选择）')},...rerankers]} />
           {staleReranker && <small className="error-text" role="alert">{t('原重排模型已失效，请重新选择')}</small>}
           {catalog && !rerankers.length && <small className="field-help">{t('暂无已配置的重排模型，请先在模型供应商中添加。')}</small>}
+        </div>
+        <div className="evaluation-evidence-grid">
+          <label className="field"><span className="label-with-tip">{t('请求总数上限')}<InfoTip label={t('预算说明')} text={t('空间默认的单次评测请求总数上限，新建评测时自动使用。')} /></span><input required type="number" min="1" max="100000" disabled={disabled} value={evaluationMaxRequests} onChange={event => { setEvaluationMaxRequests(event.target.value); changed('evaluation'); }} />{loaded && invalidEvaluationMaxRequests && <small className="error-text">{t('请输入 1–100000 之间的整数。')}</small>}</label>
+          <label className="field"><span className="label-with-tip">{t('输出 token 预留预算')}<InfoTip label={t('预算说明')} text={t('空间默认的单次评测输出 token 预留预算，新建评测时自动使用。')} /></span><input required type="number" min="256" max="100000000" disabled={disabled} value={evaluationMaxOutputTokens} onChange={event => { setEvaluationMaxOutputTokens(event.target.value); changed('evaluation'); }} />{loaded && invalidEvaluationMaxOutputTokens && <small className="error-text">{t('请输入 256–100000000 之间的整数。')}</small>}</label>
         </div>
         <details className="space-settings-advanced"><summary><ChevronRight aria-hidden="true"/><span>{t('提示词配置')}</span><small>{t(judgePrompt === defaultJudgePrompt ? '使用默认提示词' : '已自定义')}</small></summary>
           <div className="space-settings-advanced-body"><PromptEditor label="结果评分提示词" tip="补充回答或检索结果的评分要求；准备评测时冻结到运行快照，不影响生成质量评审。" value={judgePrompt} defaultValue={defaultJudgePrompt} disabled={disabled} readOnly={readOnly} language={language} onChange={value => { setJudgePrompt(value); changed('evaluation'); }}/></div>

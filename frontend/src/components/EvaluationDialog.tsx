@@ -1,6 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import {Play, X} from 'lucide-react';
-import type {Catalog, Dataset, LlmSelection} from '../types';
+import type {Catalog, Dataset, DatasetSettings, LlmSelection} from '../types';
 import {tr, type Language} from '../i18n';
 import {createClientId} from '../clientId';
 import {datasetApi, llmChoices, rerankerChoices, selectionValue} from '../datasetApi';
@@ -48,7 +48,6 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
   const [chosen, setChosen] = useState<string[]|null>(null);
   const [thresholds, setThresholds] = useState<Record<string,number>>({});
   const [scope, setScope] = useState('5'), [customLimit, setCustomLimit] = useState('50');
-  const [requests, setRequests] = useState(500), [tokens, setTokens] = useState(500000);
   const [prompt, setPrompt] = useState(''), [criteria, setCriteria] = useState('');
   const [examples, setExamples] = useState(''), [phrases, setPhrases] = useState('');
   const [schema, setSchema] = useState('{"type":"object"}');
@@ -64,7 +63,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
       for(let page=2;page<=Math.ceil(first.total/100);page++) first.items.push(...(await datasetApi.list(page,100,'')).items);
       return first;
     })(), evaluationApi.capabilities(), datasetApi.settings()])
-      .then(([data, capabilities, defaults]) => {
+      .then(([data, capabilities, defaults]: [ {items: Dataset[]}, {metrics: Metric[]}, DatasetSettings]) => {
         if (!active) return;
         setDatasets(data.items); setMetrics(capabilities.metrics);
         const compatible=data.items.filter(item=>!item.evaluation_purpose || ['both',evaluationType].includes(item.evaluation_purpose));
@@ -150,7 +149,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             ...(id === 'rules.required_text' ? {required_text:phrases.split('\n').map(s => s.trim()).filter(Boolean)} : {}),
             ...(id === 'rules.json_schema' ? {json_schema:JSON.parse(schema)} : {}),
           })),
-          budget:{max_requests:requests,max_output_tokens:tokens}, use_cache:true,
+          use_cache:true,
         };
         const signature = JSON.stringify({...payload,idempotency_key:''});
         if (lastPayload.current !== signature) {
@@ -247,7 +246,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             {needsJudge && !validJudge && loaded && <p className="evaluation-guidance" role="status">{t(llms.length
               ? '请选择一个评审模型后开始评测。' : '没有可用的评审模型，请先在服务配置中添加大语言模型。')}</p>}
             <div className="evaluation-evidence-grid">
-              <label className="field"><span className="label-with-tip">{t('运行范围')}<InfoTip label={t('运行范围说明')} text={t('试跑最多使用所选条数；全部样本仍受高级设置中的预算限制。')}/></span>
+              <label className="field"><span className="label-with-tip">{t('运行范围')}<InfoTip label={t('运行范围说明')} text={t('试跑最多使用所选条数；全部样本仍受空间设置中的预算限制。')}/></span>
                 <select aria-label={t('运行范围')} value={scope} onChange={e => setScope(e.target.value)}>
                   <option value="5">{t('先试跑 5 条（推荐）')}</option><option value="20">{t('先试跑 20 条')}</option>
                   <option value="all">{t('全部样本')}</option><option value="custom">{t('自定义条数')}</option>
@@ -283,10 +282,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
               {effective.includes('rules.required_text') && <label className="field"><span>{t('必需短语（每行一个）')}</span><textarea required value={phrases} onChange={e => setPhrases(e.target.value)}/></label>}
               {effective.includes('rules.json_schema') && <label className="field"><span>JSON Schema</span><textarea required value={schema} onChange={e => setSchema(e.target.value)}/></label>}
               {benchmark === 'llm' && <label className="field"><span>{t('目标系统提示词')}</span><textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={20000}/></label>}
-              <div className="evaluation-evidence-grid">
-                <label className="field"><span>{t('请求总数上限')}</span><input required type="number" min="1" max="100000" value={requests} onChange={e => setRequests(Number(e.target.value))}/></label>
-                <label className="field"><span className="label-with-tip">{t('输出 token 预留预算')}<InfoTip label={t('预算说明')} text={t('模型请求按最大输出预留预算；实际用量以供应商返回为准。Dify 应用的单次输出上限需在 Dify 内配置。')}/></span><input required type="number" min="256" max="100000000" value={tokens} onChange={e => setTokens(Number(e.target.value))}/></label>
-              </div>
+              <p className="field-help">{t('请求和 token 预算由空间设置统一管理。')}</p>
             </div>
           </details>
         </fieldset>
