@@ -1164,7 +1164,7 @@ Object.assign(english, {
  '评测详情导航':'Evaluation navigation','复核与改进':'Review and improve',
  '搜索评测名称或 ID':'Search evaluations by name or ID','评测状态':'Evaluation status','筛选评测状态':'Filter evaluation status',
  '没有匹配的评测':'No matching evaluations','评测运行列表':'Evaluation runs',
- '规则':'Rules','得分分布':'Score distribution','有效评分':'Scored samples','暂无有效评分':'No valid scores yet','指标统计详情':'Detailed metric statistics',
+ '规则':'Rules','得分分布':'Score distribution','分数区间':'Score range','项':'items','有效评分':'Scored samples','暂无有效评分':'No valid scores yet','指标统计详情':'Detailed metric statistics',
  '样本明细':'Sample results','显示':'Showing','搜索样本问题':'Search questions','样本排序':'Sort samples','原始顺序':'Original order',
  '低分优先':'Lowest first','高分优先':'Highest first','样本指标得分表':'Sample metric scores','耗时':'Duration',
  '点击问题查看评分理由、参考答案与召回内容。':'Select a question to inspect scoring reasons, reference answers and retrieved content.',

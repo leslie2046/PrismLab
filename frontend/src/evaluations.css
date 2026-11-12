@@ -127,10 +127,14 @@
 .evaluation-metric-primary > div:last-child { text-align:right; }
 .evaluation-metric-primary > div:last-child > strong { font-size:18px; font-weight:500; }
 .evaluation-metric-primary small { color:var(--muted-foreground); font-size:11px; }
-.evaluation-distribution-caption,.evaluation-distribution-axis { display:flex; justify-content:space-between; gap:8px; font-size:10px; color:var(--muted-foreground); }
-.evaluation-histogram { display:grid; grid-template-columns:repeat(5,1fr); align-items:end; gap:4px; height:32px; margin:6px 0 4px; border-bottom:1px solid var(--border); }
-.evaluation-histogram > div { display:flex; align-items:end; height:100%; background:var(--surface-subtle); }
-.evaluation-histogram > div > span { display:block; width:100%; background:var(--chart-1); }
+.evaluation-distribution-caption { display:flex; justify-content:space-between; gap:8px; font-size:10px; color:var(--muted-foreground); }
+.evaluation-distribution-list { display:grid; gap:5px; margin-top:8px; }
+.evaluation-distribution-row { display:grid; grid-template-columns:42px minmax(0,1fr) 56px; align-items:center; gap:7px; min-height:14px; font-size:10px; font-variant-numeric:tabular-nums; }
+.evaluation-distribution-range,.evaluation-distribution-count { color:var(--muted-foreground); white-space:nowrap; }
+.evaluation-distribution-count { text-align:right; }
+.evaluation-distribution-count small { font-size:10px; }
+.evaluation-distribution-track { display:block; height:9px; overflow:hidden; border-radius:3px; background:var(--surface-subtle); }
+.evaluation-distribution-track > span { display:block; height:100%; min-width:0; border-radius:3px; background:var(--chart-1); }
 .evaluation-metric-card footer { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; margin-top:12px; padding-top:10px; border-top:1px solid var(--border); color:var(--muted-foreground); font-size:11px; }
 .evaluation-card-warning { margin:10px 0 0; font-size:11px; color:var(--warning); }
 .evaluation-no-score { display:grid; place-items:center; min-height:65px; margin:0; color:var(--muted-foreground); font-size:12px; }
