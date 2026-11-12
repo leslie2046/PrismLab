@@ -134,7 +134,7 @@ export type Dataset = {
   source_type: 'manual' | 'import' | 'documents' | 'dify' | 'goldens' | 'scratch'; item_count: number; target_size?: number;
   llm?: LlmSelection; sdk?: string; sdk_version?: string; generation_usage?: { requests: number; output_tokens: number; cost: number | null }; source_chunk_count?: number; error?: string | null; created_at: string; updated_at: string;
   data_sources?: DatasetSource[]; dify_config_id?: string | null; dify_config_ids?: string[]; generation_config?: DatasetGenerationOptions; generation_options?: DatasetGenerationOptions;
-  build_mode?: 'append' | 'replace_generated'; build_progress?: number; build_target?: number;
+  build_mode?: 'append' | 'replace_generated' | 'regenerate_answers'; build_progress?: number; build_target?: number;
   build_retry_count?: number; build_retry_limit?: number; build_last_error?: string | null;
   build_stage?: string; build_requests?: number; build_active_requests?: number; build_output_tokens?: number;
   build_started_at?: string; build_request_started_at?: string | null;

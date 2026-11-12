@@ -29,7 +29,7 @@ class BuildRepository:
 
     def __getattr__(self, name):
         method = getattr(self.repo, name)
-        if name in {'mutate', 'add', 'replace_generated', 'save_sources'}:
+        if name in {'mutate', 'add', 'replace_generated', 'save_sources', 'update_answer'}:
             return lambda *args, **kwargs: method(*args, **kwargs, build_token=self.token)
         return method
 

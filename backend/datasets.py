@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from backend.dataset_trace import GenerationTrace
 from backend.dataset_build_control import BuildControl, BuildRepository, build_state, RETRY_LIMIT, RequestLimitExceeded
+from backend.dataset_llm import generation_parameters
 from shared.request_control import GenerationStopped, current_control
 from backend.dify_names import api_root
 from backend.schemas import ProviderSelection
@@ -372,6 +373,115 @@ def build_dataset(*args, **kwargs):
     except GenerationStopped:
         # Cancellation may race any error/finalization write; fencing wins.
         return
+
+
+def regenerate_answers(repo, identifier, item_ids, config, key, prompt, options=None, build_token=None):
+    """Regenerate only reference answers for existing samples.
+
+    Inputs and contexts are read from the locked samples and are never sent back
+    through the dataset generator. Each successful answer receives its own trace
+    so the exact prompt, context and model request remain inspectable.
+    """
+    usage = {'requests': 0, 'output_tokens': 0}
+    scope = None
+    try:
+        state = build_state()
+        if build_token is None:
+            build_token = state['build_token']
+        control = BuildControl(repo, identifier, build_token)
+        scope = current_control.set(control)
+        repo = BuildRepository(repo, build_token)
+        control.check()
+        dataset = repo.get(identifier)
+        selected = repo.selected_items(identifier, item_ids)
+        selected = [item for item in selected if item.get('status', 'active') == 'active'
+                    and isinstance(item.get('input'), str) and item.get('input').strip()
+                    and isinstance(item.get('context'), list) and any(str(value).strip() for value in item['context'])]
+        if not selected:
+            repo.mutate(identifier, lambda c, d: d.update(status='failed', error='所选数据项没有可用的参考上下文。'), generating=True)
+            return
+        answer_prompt = (prompt or DEFAULT_PROMPT).strip()
+        answer_format = (options or {}).get('expected_output_format') or '直接输出参考答案正文，不要输出 JSON、标题或解释。'
+        model_snapshot = {'generator': dataset.get('generation_models', {}).get('generator') or config}
+        base_progress = int(dataset.get('build_progress') or 0)
+        for index, item in enumerate(selected):
+            control.check()
+            context = [str(value).strip() for value in item.get('context') or [] if str(value).strip()]
+            request_prompt = (
+                f'{answer_prompt}\n\n'
+                '现在只为下面这个已有问题重新生成参考答案。问题和参考上下文是固定资料，不能改写问题、补充上下文或编造资料。\n'
+                f'问题：\n{item["input"]}\n\n'
+                '参考上下文：\n' + '\n\n---\n\n'.join(context) + '\n\n' + answer_format
+            )
+            trace = GenerationTrace(repo, identifier, {
+                'scope': 'answer', 'backend': 'deepeval', 'method': 'answer_regeneration',
+                'prompt': answer_prompt, 'critic_prompt': None,
+                'options': {**(options or {}), 'answer_format': answer_format},
+                'models': {role: {k: model.get(k) for k in ('provider', 'name', 'model', 'model_revision') if model and model.get(k) is not None}
+                           for role, model in model_snapshot.items()},
+                'sources': [{'id': f'context-{index + 1}', 'content': value, 'metadata': {}} for value in context],
+            })
+            control.trace = trace
+            attempts = 0
+            answer = None
+            last_error = None
+            while attempts <= RETRY_LIMIT and answer is None:
+                control.check()
+                attempts += 1
+                try:
+                    sample, content = stream_chat(
+                        config['base_url'], config['model'], key, request_prompt,
+                        max_tokens=8192, timeout=180, capture=True, capture_reasoning=False,
+                        require_complete=True, _control=control, trace_role='answer_generation',
+                        request_parameters=generation_parameters(config, key))
+                    usage['requests'] += 1
+                    usage['output_tokens'] += sample.get('output_tokens', 0)
+                    answer = content.strip()
+                    if not answer:
+                        raise ValueError('模型未返回有效参考答案')
+                except GenerationStopped:
+                    raise
+                except (ValueError, requests.RequestException) as error:
+                    last_error = error
+                    failure = model_request_failure(error)
+                    if failure:
+                        raise ValueError(failure) from None
+                    if attempts <= RETRY_LIMIT:
+                        repo.mutate(identifier, lambda c, d: d.update(build_retry_count=attempts, build_last_error='答案生成失败，正在重试…'), generating=True)
+            if answer is None:
+                raise ValueError('答案生成失败，已达到重试上限') from last_error
+            traced = trace.attach([{'input': item['input'], 'expected_output': answer, 'context': item['context']}])[0]
+            repo.update_answer(identifier, item['id'], answer, traced['generation_trace_id'], traced['generation_record_id'])
+            repo.mutate(identifier, lambda c, d: d.update(build_progress=base_progress + index + 1,
+                                                         build_answer_pending_ids=[value for value in d.get('build_answer_pending_ids', item_ids) if value != item['id']],
+                                                         build_retry_count=0,
+                                                         build_last_error=None, generation_usage={
+                                                             'requests': d.get('generation_usage', {}).get('requests', 0) + usage['requests'],
+                                                             'output_tokens': d.get('generation_usage', {}).get('output_tokens', 0) + usage['output_tokens'],
+                                                             'cost': None}), generating=True)
+            usage.update(requests=0, output_tokens=0)
+        repo.mutate(identifier, lambda c, d: d.update(status='ready', error=None, build_active_requests=0,
+                                                     build_answer_pending_ids=[]), generating=True)
+    except GenerationStopped:
+        return
+    except RequestLimitExceeded as error:
+        repo.mutate(identifier, lambda c, d: d.update(status='failed', error='答案重新生成已停止：' + str(error), build_active_requests=0), generating=True)
+    except (HTTPException, ValueError, requests.RequestException) as error:
+        detail = str(error) if isinstance(error, ValueError) and str(error) else '答案重新生成未完成，已生成的新答案保留；请检查模型和上下文后重试。'
+        repo.mutate(identifier, lambda c, d: d.update(status='failed', error=detail), generating=True)
+    except Exception:
+        repo.mutate(identifier, lambda c, d: d.update(status='failed', error='答案重新生成失败，已生成的新答案保留。'), generating=True)
+    finally:
+        if usage['requests']:
+            try:
+                repo.mutate(identifier, lambda c, d: d.update(generation_usage={
+                    'requests': d.get('generation_usage', {}).get('requests', 0) + usage['requests'],
+                    'output_tokens': d.get('generation_usage', {}).get('output_tokens', 0) + usage['output_tokens'],
+                    'cost': None}), generating=True)
+            except (HTTPException, GenerationStopped):
+                pass
+        if scope is not None:
+            current_control.reset(scope)
 
 
 def _build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=None, critic=None, embedding=None, build_token=None):

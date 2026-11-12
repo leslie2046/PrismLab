@@ -77,6 +77,12 @@ const english: Record<string, string> = {
   "秒": "s" ,
   "进度更新失败，正在重新连接…": "Progress update failed. Reconnecting\u2026" ,
   "取消生成": "Cancel generation" ,
+  "重新生成答案": "Regenerate answers" ,
+  "确认重新生成": "Regenerate" ,
+  "条样本的参考答案？": "sample reference answers?" ,
+  "问题、上下文和来源不会改变。": "Questions, contexts and sources will not change." ,
+  "答案重新生成已停止，已完成的新答案保留。": "Answer regeneration stopped. Completed new answers are preserved." ,
+  "只更新参考答案，问题、上下文和来源保持不变。每 2 秒自动更新；连续失败最多重试 2 次。": "Only reference answers are updated; questions, contexts and sources stay unchanged. Updates every 2 seconds; at most 2 retries after consecutive failures." ,
 
   "正在加载完整运行记录…": "Loading complete run history…",
   "运行记录加载失败，请重试。": "Could not load run history. Please retry.",

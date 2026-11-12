@@ -14,7 +14,7 @@ from backend.dataset_build_control import build_state
 from backend.dataset_store import DatasetStore
 from backend.dataset_sources import knowledge_ids, tag_knowledge, summarize_sources
 from backend.datasets import (DEFAULT_CRITIC_PROMPT, DEFAULT_PROMPT, LEGACY_DEFAULT_PROMPT, MAX_UPLOAD, MAX_SOURCE_CHARS, DatasetInfo, DatasetItem, DatasetSettings,
-                              DatasetGenerationConfig, GenerationOptions, build_dataset, document_chunks, fetch_dify_chunks, parse_import)
+                              DatasetGenerationConfig, GenerationOptions, build_dataset, regenerate_answers, document_chunks, fetch_dify_chunks, parse_import)
 from backend.ragas_generation import RAGAS_BACKEND_VERSION
 from backend.evaluation_contracts import DEFAULT_JUDGE_PROMPT, generation_engine, model_evidence
 from backend.evaluation_store import EvaluationStore
@@ -483,6 +483,45 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                                   options, (critic_config, critic_key) if critic_selection else None, embedding, build_token=dataset['build_token'])
         return dataset
 
+    @router.post('/datasets/{identifier}/regenerate-answers', status_code=202)
+    def regenerate_dataset_answers(identifier: str, payload: BulkIds, background_tasks: BackgroundTasks):
+        target = repo()
+        current = target.get(identifier)
+        if current['status'] == 'generating':
+            raise HTTPException(409, '数据集正在构建，请等待完成后再修改')
+        try:
+            rows = target.selected_items(identifier, payload.ids)
+        except HTTPException:
+            raise
+        eligible = [item for item in rows if item.get('status', 'active') == 'active'
+                    and isinstance(item.get('input'), str) and item.get('input').strip()
+                    and isinstance(item.get('context'), list) and any(str(value).strip() for value in item['context'])]
+        if not eligible:
+            raise HTTPException(400, '所选数据项没有可用的参考上下文，无法重新生成答案')
+        defaults = settings()
+        values = current.get('generation_config') or current.get('generation_options') or {}
+        try:
+            config_values = DatasetGenerationConfig.model_validate(values)
+        except ValueError:
+            raise HTTPException(400, '生成配置无效，请先配置模型与生成方式') from None
+        selection, config, key = resolve_llm(config_values.llm or current.get('llm') or defaults['default_llm'])
+        options = generation_values(config_values, current.get('evaluation_purpose', 'both'), exclude={'prompt'})
+        options.update(llm=selection, max_concurrent=defaults['max_concurrent'])
+        prompt = config_values.prompt or current.get('prompt') or defaults['prompt']
+        ids = [item['id'] for item in eligible]
+        def start(connection, dataset):
+            dataset.update(build_state(), status='generating', error=None,
+                           llm=selection, generation_options=options,
+                           target_size=len(ids), build_mode='regenerate_answers', build_baseline=0,
+                           build_target=len(ids), build_progress=0,
+                           build_answer_item_ids=ids, build_answer_pending_ids=ids,
+                           build_answer_total=len(ids), build_stage='generating',
+                           generation_models={'generator': model_evidence(config, selection, 'llm')})
+        dataset = target.mutate(identifier, start)
+        background_tasks.add_task(regenerate_answers, target, identifier, ids, config, key, prompt,
+                                  options, dataset['build_token'])
+        return dataset
+
     @router.delete('/datasets/{identifier}', status_code=204)
     def delete_dataset(identifier: str):
         repo().delete(identifier)
@@ -504,6 +543,33 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         dataset = target.get(identifier)
         if dataset['status'] not in {'failed', 'cancelled'} or not dataset.get('target_size'):
             raise HTTPException(409, '只能重试未完成的数据集构建')
+        if dataset.get('build_mode') == 'regenerate_answers':
+            pending = dataset.get('build_answer_pending_ids') or dataset.get('build_answer_item_ids') or []
+            if not pending:
+                raise HTTPException(409, '没有待重新生成答案的数据项')
+            values = dataset.get('generation_options') or dataset.get('generation_config') or {}
+            try:
+                config_values = DatasetGenerationConfig.model_validate(values)
+            except ValueError:
+                raise HTTPException(400, '生成配置无效，请先配置模型与生成方式') from None
+            defaults = settings()
+            selection, config, key = resolve_llm(config_values.llm or dataset.get('llm') or defaults['default_llm'])
+            options = generation_values(config_values, dataset.get('evaluation_purpose', 'both'), exclude={'prompt'})
+            options.update(llm=selection, max_concurrent=defaults['max_concurrent'])
+            prompt = config_values.prompt or dataset.get('prompt') or defaults['prompt']
+            total = dataset.get('build_answer_total') or dataset.get('build_target') or len(pending)
+            def start_answers(c, d):
+                if d['status'] not in {'failed', 'cancelled'}:
+                    raise HTTPException(409, '数据集正在构建')
+                d.update(build_state(), status='generating', error=None, llm=selection,
+                         generation_options=options, target_size=total, build_target=total,
+                         build_progress=d.get('build_progress', 0), build_mode='regenerate_answers',
+                         build_answer_pending_ids=pending,
+                         generation_models={'generator': model_evidence(config, selection, 'llm')})
+            dataset = target.mutate(identifier, start_answers)
+            background_tasks.add_task(regenerate_answers, target, identifier, pending, config, key,
+                                      prompt, options, dataset['build_token'])
+            return dataset
         selection, config, key = resolve_llm(dataset.get('llm') or settings()['default_llm'])
         opts = {**dataset.get('generation_options', {}), 'max_concurrent': settings()['max_concurrent']}
         if dataset.get('evaluation_purpose') == 'retrieval' and (opts.get('method') != 'contexts' or dataset.get('source_type') != 'dify' or not knowledge_ids(dataset)):

@@ -108,6 +108,27 @@ class DatasetStore:
             dataset.update(status='ready', error=None, build_progress=len(items))
         return self.mutate(identifier, action, generating=True, build_token=build_token)
 
+    def update_answer(self, identifier, item_id, expected_output, trace_id, record_id, *, build_token=None):
+        """Replace only a sample's reference answer and trace links.
+
+        The question, context, provenance and lifecycle fields remain byte-for-byte
+        unchanged. This is intentionally separate from update_item, which represents
+        a manual edit and changes the item's origin.
+        """
+        def action(connection, dataset):
+            row = connection.execute(
+                'SELECT payload FROM dataset_items WHERE dataset_id=%s AND id=%s FOR UPDATE',
+                (identifier, item_id)).fetchone()
+            if not row:
+                raise HTTPException(404, '数据项不存在')
+            item = json.loads(row['payload'])
+            item.update(expected_output=expected_output, generation_trace_id=trace_id,
+                        generation_record_id=record_id, updated_at=utc_now())
+            connection.execute(
+                'UPDATE dataset_items SET updated_at=%s,payload=%s WHERE dataset_id=%s AND id=%s',
+                (item['updated_at'], json.dumps(item, ensure_ascii=False), identifier, item_id))
+        return self.mutate(identifier, action, generating=True, build_token=build_token)
+
     def update_item(self, identifier, item_id, values=None):
         def action(connection, dataset):
             row = connection.execute("SELECT payload FROM dataset_items WHERE dataset_id=%s AND id=%s", (identifier, item_id)).fetchone()

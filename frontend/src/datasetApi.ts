@@ -37,6 +37,7 @@ export const datasetApi = {
   syncDify: (id: string, form: FormData) => call<Dataset>(`datasets/${id}/sync-dify`, 'POST', form),
   configure: (id: string, value: DatasetGenerationOptions & { language: Language }) => call<Dataset>(`datasets/${id}/generation-config`, 'PUT', value),
   build: (id: string, mode: 'append' | 'replace_generated') => call<Dataset>(`datasets/${id}/build?mode=${mode}`, 'POST'),
+  regenerateAnswers: (id: string, ids: string[]) => call<Dataset>(`datasets/${id}/regenerate-answers`, 'POST', { ids }),
   append: (id: string, form: FormData) => call<Dataset>(`datasets/${id}/import`, 'POST', form),
   saveItem: (id: string, itemId: string | undefined, value: unknown) => call<Dataset>(`datasets/${id}/items${itemId ? `/${itemId}` : ''}`, itemId ? 'PUT' : 'POST', value),
   deleteItem: (id: string, itemId: string) => call<void>(`datasets/${id}/items/${itemId}`, 'DELETE'),
