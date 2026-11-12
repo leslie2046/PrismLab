@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,16 +16,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from backend.bulk import PlanBulk, RunBulk
 from backend.connectivity import ConnectivityError, check_models
+from backend.evaluation_routes import install_evaluation_routes
 from backend.dataset_routes import install_dataset_routes
 from backend.auth import AuthService, SESSION_COOKIE
 from backend.model_discovery import DISCOVERABLE_PROVIDERS, ModelDiscoveryError, list_models, verify_key
 from backend.endpoints import endpoint_url, server_root
 from backend.catalog import allowed_provider_ids, get_catalog
-from backend.model_configs import configured_models
+from backend.model_configs import configured_models, enabled_models
 from backend.playground import run_playground
 from backend.runner import BenchmarkRunner
-from backend.schemas import AiReportRequest, BenchmarkKind, SystemSettingsUpdate, DifyNamesRequest, PlaygroundRequest, ProviderAccess, ProviderSelection, RunCreate, ServiceConfigCreate, TestPlanCreate
+from backend.schemas import ActivationUpdate, ModelActivationUpdate, AiReportRequest, BenchmarkKind, SystemSettingsUpdate, DifyNamesRequest, PlaygroundRequest, ProviderAccess, ProviderSelection, RunCreate, ServiceConfigCreate, TestPlanCreate
 from backend.secrets import SecretBox
 from backend.store import DEFAULT_DATABASE_URL, RunStore, TERMINAL_STATUSES, utc_now
 from backend.tenant_context import WorkspaceProxy, can_manage_workspace, workspace_context
@@ -40,8 +43,7 @@ auth = AuthService.from_env(root_store, DATA_DIR)
 workspaces = WorkspaceManager(root_store, PROJECT_ROOT, DATA_DIR, secret_box, enabled=auth.config.enabled)
 store = WorkspaceProxy(workspaces, "store")
 runner = WorkspaceProxy(workspaces, "runner")
-if auth.config.enabled:
-    auth.workspaces = workspaces
+auth.workspaces = workspaces
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -50,10 +52,12 @@ async def lifespan(_: FastAPI):
     if workspaces.enabled:
         workspaces.initialize()
     scheduler_task = asyncio.create_task(_plan_scheduler())
+    evaluation_task = asyncio.create_task(_evaluation_scheduler()) if os.getenv('EVALUATION_EMBEDDED_WORKER','true').lower()!='false' else None
     try:
         yield
     finally:
         scheduler_task.cancel()
+        if evaluation_task:evaluation_task.cancel()
         for runtime in list(workspaces.runtimes.values()):
             for task in list(runtime.runner.tasks.values()):
                 if not task.done():
@@ -67,7 +71,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 auth.install(app)
@@ -96,18 +100,19 @@ def catalog() -> dict:
             {"id": item["id"], "label": item["label"]}
             for item in benchmark["providers"]
         ]
-        configs = store.list_service_configs(benchmark["id"])
+        configs = [item for item in store.list_service_configs(benchmark["id"])
+                   if any(model["benchmark"] == benchmark["id"] for model in enabled_models(item))]
         benchmark["providers"] = [
             {
                 "id": item["id"],
                 "provider": item["provider"],
                 "label": item["name"],
-                "model": next((model["name"] for model in _models(item) if model["benchmark"] == benchmark["id"]), None),
-                "models": [_public_model(model, item) for model in _models(item) if model["benchmark"] == benchmark["id"]],
+                "model": next((model["name"] for model in enabled_models(item) if model["benchmark"] == benchmark["id"]), None),
+                "models": [_public_model(model, item) for model in enabled_models(item) if model["benchmark"] == benchmark["id"]],
                 "icon": item.get("icon", "cube"),
                 "dataset_id": item.get("dataset_id"),
-                "endpoint_configured": any(bool(model.get("credentials")) or not is_placeholder_url(model.get("base_url")) for model in _models(item) if model["benchmark"] == benchmark["id"]),
-                "credential_configured": bool(item.get("api_key_encrypted")) or any(credential.get("api_key_encrypted") for model in _models(item) for credential in model.get("credentials", [])),
+                "endpoint_configured": any(bool(model.get("credentials")) or not is_placeholder_url(model.get("base_url")) for model in enabled_models(item) if model["benchmark"] == benchmark["id"]),
+                "credential_configured": bool(item.get("api_key_encrypted")) or any(credential.get("api_key_encrypted") for model in enabled_models(item) for credential in model.get("credentials", [])),
                 "credential_required": bool(item.get("api_key_env")),
             }
             for item in configs
@@ -143,6 +148,7 @@ def _public_config(config: dict) -> dict:
         key: value for key, value in config.items()
         if key not in {"api_key_encrypted", "api_key_env"}
     } | {
+        "enabled": config.get("enabled", True),
         "models": [_public_model(model, config) for model in _models(config)],
         "has_api_key": bool(config.get("api_key_encrypted")),
         "api_key_masked": _masked_api_key(config.get("api_key_encrypted")),
@@ -164,6 +170,7 @@ def _credential_scope(url: str, provider: str) -> str:
 
 def _public_model(model: dict, config: dict) -> dict:
     result = {key: value for key, value in model.items() if key != "credentials"}
+    result["enabled"] = model.get("enabled", True)
     credentials = model.get("credentials") or []
     if not credentials and model.get("base_url") and config.get("provider") != "dify":
         credentials = [{"id": "legacy", "name": "Default", "server_url": server_root(model["base_url"]), "model_uid": model.get("name"), "api_key_encrypted": config.get("api_key_encrypted")}]
@@ -181,6 +188,15 @@ def _validate_provider(payload: ServiceConfigCreate, key: str | None, current: d
     existing = {item.get("id"): item for model in _models(current) for item in model.get("credentials", [])} if current else {}
     for item in payload.models:
         model = item.model_dump(exclude={"credentials"})
+        if current and "enabled" not in item.model_fields_set:
+            previous_models = _models(current)
+            previous_model = next((m for m in previous_models if (m.get("alias") or m.get("name")) == (item.alias or item.name)), None)
+            # A model rename retains its credentials and activation state.
+            if previous_model is None:
+                ids = {c.id for c in item.credentials if c.id}
+                previous_model = next((m for m in previous_models if ids.intersection(c.get("id") for c in m.get("credentials", []))), None)
+            if previous_model is not None:
+                model["enabled"] = previous_model.get("enabled", True)
         credentials = []
         for credential in item.credentials:
             raw = credential.model_dump(exclude={"api_key"})
@@ -383,6 +399,8 @@ def update_service_config(config_id: str, payload: ServiceConfigCreate) -> dict:
     models = _validate_provider(payload, key, current)
     _validate_unique_aliases(models, payload.provider, config_id)
     values = payload.model_dump(exclude={"api_key"})
+    if "enabled" not in payload.model_fields_set:
+        values["enabled"] = current.get("enabled", True)
     values["models"] = models
     values["benchmark"] = models[0]["benchmark"] if models else None
     values["base_url"] = (models[0].get("base_url") or endpoint_url(models[0]["credentials"][0]["server_url"], models[0]["benchmark"], payload.provider)) if models else None
@@ -395,6 +413,22 @@ def update_service_config(config_id: str, payload: ServiceConfigCreate) -> dict:
     if payload.api_key:
         config["api_key_encrypted"] = secret_box.encrypt(payload.api_key.get_secret_value())
     store.put_service_config(config)
+    return _public_config(config)
+
+
+@app.patch("/api/provider-models/{provider}/enabled")
+def set_provider_enabled(provider: str, payload: ActivationUpdate) -> list[dict]:
+    configs = store.set_provider_enabled(provider, payload.enabled)
+    if not configs:
+        raise HTTPException(404, "Model provider not found; add a model first")
+    return [_public_config(config) for config in configs]
+
+
+@app.patch("/api/service-configs/{config_id}/models/enabled")
+def set_model_enabled(config_id: str, payload: ModelActivationUpdate) -> dict:
+    config = store.set_model_enabled(config_id, payload.model, payload.enabled)
+    if config is None:
+        raise HTTPException(404, "Model not found")
     return _public_config(config)
 
 
@@ -426,6 +460,17 @@ def list_plans(
         result["items"] = [_normalize_plan(item) for item in result["items"]]
         return result if page is not None else result["items"]
     return [_normalize_plan(item) for item in store.list_plans(limit)]
+
+
+@app.get("/api/plans/selection")
+def select_plans(q: str = Query('', max_length=200),
+                 status: Literal["active", "paused", "stopped", "completed", "error"] | None = None,
+                 benchmark: BenchmarkKind | None = None,
+                 repeat_mode: Literal["once", "count", "forever"] | None = None):
+    try:
+        return store.plans_page(1, 1, q=q, status=status, benchmark=benchmark, repeat_mode=repeat_mode, ids_only=True)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
 
 
 @app.post("/api/plans", status_code=201)
@@ -617,12 +662,16 @@ def _resolve_configs(benchmark: str, selections: list[dict], legacy_dataset_id: 
         config = store.get_service_config(config_id)
         if not config:
             raise HTTPException(400, f"Invalid service config: {config_id}")
+        if config.get("enabled", True) is False:
+            raise HTTPException(400, f"模型供应商「{config['name']}」已关闭，请先启用。")
         matching = [item for item in _models(config) if item["benchmark"] == benchmark]
         model_name = selection.get("model")
         model = next((item for item in matching if item.get("alias") == model_name), None) if model_name else None
-        model = model or (next((item for item in matching if item["name"] == model_name), None) if model_name else (matching[0] if matching else None))
+        model = model or (next((item for item in matching if item["name"] == model_name), None) if model_name else next((item for item in matching if item.get("enabled", True) is not False), None))
         if not model:
             raise HTTPException(400, f"Model '{model_name}' is not configured for '{config['name']}' and {benchmark}")
+        if model.get("enabled", True) is False:
+            raise HTTPException(400, f"模型「{model.get('alias') or model['name']}」已关闭，请先启用。")
         credentials = model.get("credentials") or []
         credential_id = selection.get("credential_id")
         if credentials and not credential_id and len(credentials) > 1:
@@ -646,6 +695,12 @@ def _playground_access(payload: PlaygroundRequest):
     selection = {"id": payload.provider_id, "model": payload.model}
     if payload.credential_id:
         selection["credential_id"] = payload.credential_id
+    if selection.get('credential_id') == 'legacy':
+        saved = store.get_service_config(payload.provider_id)
+        models = _models(saved) if saved else []
+        selected = next((m for m in models if m['benchmark'] == payload.benchmark and payload.model in {m.get('alias'),m.get('name')}), None)
+        if selected and not selected.get('credentials'):
+            selection.pop('credential_id', None)
     config = _resolve_configs(payload.benchmark, [selection], payload.dataset_id)[0]
     key = None
     if config.get("credential_id"):
@@ -663,6 +718,47 @@ def _dataset_concrete_store():
 
 
 install_dataset_routes(app, store, _playground_access, _dataset_concrete_store)
+install_evaluation_routes(app, store, _playground_access, _dataset_concrete_store)
+
+
+async def _evaluation_scheduler(concurrency=2):
+    """Lease jobs in concrete workspace stores; never depend on request context."""
+    from backend.evaluation_store import EvaluationStore
+    from backend.evaluation_execution import run_evaluation
+    owner = uuid.uuid4().hex
+    jobs = set()
+    async def execute(runtime, access, repo, claim):
+        token = workspace_context.set((runtime, access))
+        try:
+            await asyncio.to_thread(run_evaluation, repo, claim, _playground_access)
+        finally:
+            workspace_context.reset(token)
+    try:
+        while True:
+            for job in list(jobs):
+                if job.done():
+                    jobs.remove(job)
+                    if not job.cancelled() and job.exception():logging.error('Evaluation worker stopped; lease will be reclaimed')
+            try:
+                available=await asyncio.to_thread(workspaces.scheduled_workspaces)
+            except Exception:
+                logging.error('Evaluation queue unavailable; retrying')
+                await asyncio.sleep(5)
+                continue
+            if len(jobs) < concurrency:
+                for runtime, access in available:
+                    if len(jobs) >= concurrency: break
+                    repo = EvaluationStore(runtime.store)
+                    try:claim = await asyncio.to_thread(repo.claim, owner)
+                    except Exception:
+                        logging.error('Workspace evaluation queue unavailable; retrying')
+                        continue
+                    if claim:
+                        jobs.add(asyncio.create_task(execute(runtime, access, repo, claim)))
+            await asyncio.sleep(1)
+    finally:
+        for job in jobs:
+            job.cancel()
 
 
 @app.get("/api/system-settings")
@@ -819,6 +915,16 @@ def list_runs(
     return store.list(limit)
 
 
+@app.get("/api/runs/selection")
+def select_runs(q: str = Query('', max_length=200),
+                status: Literal["queued", "running", "completed", "failed", "cancelled"] | None = None,
+                benchmark: BenchmarkKind | None = None):
+    try:
+        return store.runs_page(1, 1, q=q, status=status, benchmark=benchmark, ids_only=True)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+
+
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str) -> dict:
     run = store.get(run_id)
@@ -848,6 +954,55 @@ async def cancel_run(run_id: str) -> dict:
     if not await runner.cancel(run_id):
         raise HTTPException(409, "Run is not active")
     return store.get(run_id)
+
+
+async def _bulk_records(payload, plans):
+    # POST batches must enforce the same deletion permission as DELETE routes.
+    if payload.action == 'delete' and not can_manage_workspace():
+        raise HTTPException(403, "Workspace configuration requires an owner or administrator")
+    result = {'succeeded': [], 'skipped': [], 'failed': []}
+    for identifier in payload.ids:
+        try:
+            item = await run_in_threadpool(store.get_plan if plans else store.get, identifier)
+            if not item:
+                raise HTTPException(404, "Record not found")
+            status = item.get('status', 'stopped')
+            eligible = ({'start': status != 'active', 'pause': status == 'active',
+                         'stop': status in {'active', 'paused'}, 'delete': True} if plans else
+                        {'cancel': status not in TERMINAL_STATUSES, 'delete': status in TERMINAL_STATUSES})
+            if not eligible[payload.action]:
+                result['skipped'].append(identifier)
+                continue
+            if plans:
+                if payload.action == 'start':
+                    await start_plan(identifier)
+                elif payload.action == 'pause':
+                    await run_in_threadpool(pause_plan, identifier)
+                elif payload.action == 'stop':
+                    await stop_plan(identifier)
+                else:
+                    await delete_plan(identifier)
+            elif payload.action == 'cancel':
+                await cancel_run(identifier)
+            else:
+                await run_in_threadpool(delete_run, identifier)
+            result['succeeded'].append(identifier)
+        except HTTPException as error:
+            result['failed'].append({'id': identifier, 'message': str(error.detail)})
+        except Exception:
+            logging.getLogger(__name__).exception("Batch %s failed for %s", payload.action, identifier)
+            result['failed'].append({'id': identifier, 'message': '操作失败，请刷新列表后重试'})
+    return result
+
+
+@app.post("/api/plans/bulk")
+async def bulk_plans(payload: PlanBulk):
+    return await _bulk_records(payload, True)
+
+
+@app.post("/api/runs/bulk")
+async def bulk_runs(payload: RunBulk):
+    return await _bulk_records(payload, False)
 
 
 @app.get("/api/runs/{run_id}/events")

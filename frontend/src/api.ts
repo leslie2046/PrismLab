@@ -1,3 +1,4 @@
+import type { BulkResult, SelectionSnapshot } from './bulkSelection';
 import type { AiReport, AuthUser, Catalog, LlmParameters, LlmSelection, PlaygroundResult, Run, ServiceConfig, SystemSettings, TestPlan } from "./types";
 import type { PageResult } from "./pagination";
 
@@ -98,6 +99,38 @@ export async function streamPlayground(payload: unknown, onDelta: (text: string,
   }
 }
 
+async function requestBulk(path: string, action: string, ids: string[]): Promise<BulkResult> {
+  const selectedWorkspace = workspaceId;
+  const result: BulkResult = { succeeded: [], skipped: [], failed: [] };
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    try {
+      if (workspaceId !== selectedWorkspace) throw new Error('Workspace changed; remaining records were not submitted.');
+      const chunk = await request<BulkResult>(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ids: ids.slice(offset, offset + 100) }) });
+      result.succeeded.push(...chunk.succeeded); result.skipped.push(...chunk.skipped); result.failed.push(...chunk.failed);
+    } catch (reason) {
+      if (!offset) throw reason;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      result.failed.push(...ids.slice(offset).map(id => ({ id, message })));
+      break;
+    }
+  }
+  return result;
+}
+
+async function loadDashboardRuns(signal: AbortSignal): Promise<Run[]> {
+  const activeWorkspace = workspaceId;
+  const runs = new Map<string, Run>();
+  for (let page = 1; ; page++) {
+    // Never combine pages from different workspaces or return a partial history.
+    if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
+    const result = await request<PageResult<Run>>(`/api/runs?${listQuery(page, 100, {})}`, { signal });
+    if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
+    result.items.forEach(run => runs.set(run.id, run));
+    if (page * result.page_size >= result.total || result.page < page) break;
+  }
+  return [...runs.values()];
+}
+
 export const api = {
   providerBalance: (configId: string, credentialId: string, signal?: AbortSignal) => request<ProviderBalance>(`/api/service-configs/${encodeURIComponent(configId)}/balance?credential_id=${encodeURIComponent(credentialId)}`, { signal }),
   llmParameters: (selection: LlmSelection, refresh = false) => request<LlmParameters>(`/api/llm/parameters?refresh=${refresh}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(selection) }),
@@ -115,7 +148,12 @@ export const api = {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }),
+  planSelection: (filters: ListFilters) => request<SelectionSnapshot>(`/api/plans/selection?${listQuery(1, 1, filters)}`),
+  runSelection: (filters: ListFilters) => request<SelectionSnapshot>(`/api/runs/selection?${listQuery(1, 1, filters)}`),
+  bulkPlans: (action: 'start' | 'pause' | 'stop' | 'delete', ids: string[]) => requestBulk('/api/plans/bulk', action, ids),
+  bulkRuns: (action: 'cancel' | 'delete', ids: string[]) => requestBulk('/api/runs/bulk', action, ids),
   runs: () => request<Run[]>("/api/runs"),
+  dashboardRuns: loadDashboardRuns,
   plans: () => request<TestPlan[]>("/api/plans"),
   runsPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<Run>>(`/api/runs?${listQuery(page, size, filters)}`, { signal }),
   plansPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<TestPlan>>(`/api/plans?${listQuery(page, size, filters)}`, { signal }),
@@ -151,6 +189,12 @@ export const api = {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  }),
+  setProviderEnabled: (provider: string, enabled: boolean) => request<ServiceConfig[]>(`/api/provider-models/${encodeURIComponent(provider)}/enabled`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  }),
+  setModelEnabled: (configId: string, model: string, enabled: boolean) => request<ServiceConfig>(`/api/service-configs/${encodeURIComponent(configId)}/models/enabled`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, enabled }),
   }),
   deleteServiceConfig: (id: string) => request<void>(`/api/service-configs/${id}`, { method: "DELETE" }),
 };

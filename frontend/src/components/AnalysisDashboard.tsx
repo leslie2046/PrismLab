@@ -4,11 +4,13 @@ import { LineChart } from "echarts/charts";
 import { AriaComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption } from "echarts/core";
-import { GitCompareArrows, LineChart as LineChartIcon, ShieldCheck } from "lucide-react";
+import { GitCompareArrows, LineChart as LineChartIcon, RefreshCw, ShieldCheck } from "lucide-react";
+import { api } from "../api";
 import { tr, type Language } from "../i18n";
 import type { Run, Scenario, TestPlan } from "../types";
 import { hasTrend, metricValue, modelKey, modelLabel, trendSeries, type DashboardMetric as Metric } from "../dashboardData";
 import { llmMetricLabel, llmMetricTip } from "../llmMetrics";
+import { PageHeader } from "./PageHeader";
 import { PaginatedList } from "./Pagination";
 
 echarts.use([LineChart, AriaComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
@@ -63,10 +65,35 @@ function ResultChart({ runs, metric, concurrency, trend, language, dark }: { run
   return <div ref={element} className="dashboard-trend-chart" role="img" aria-label={tr(language, trend ? "历史运行趋势" : "并发性能对比")} />;
 }
 
-export function AnalysisDashboard({ plans, runs, language, dark, initialPlanId, initialRunId, onSelectRun }: {
-  plans: TestPlan[]; runs: Run[]; language: Language; dark: boolean; initialPlanId: string | null; initialRunId: string | null; onSelectRun: (id: string) => void;
+export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, initialPlanId, initialRunId, onSelectRun }: {
+  plans: TestPlan[]; runs: Run[]; language: Language; dark: boolean; initialPlanId: string | null; initialRunId: string | null; onSelectRun: (run: Run) => void;
 }) {
   const t = (value: string) => tr(language, value);
+  const [snapshot, setSnapshot] = useState<{ runs: Run[]; startedAt: number } | null>(null);
+  const history = snapshot?.runs ?? null;
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    setLoading(true); setError('');
+    api.dashboardRuns(controller.signal).then(value => {
+      if (!controller.signal.aborted) setSnapshot({ runs: value, startedAt });
+    }).catch(reason => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [revision]);
+  const runs = useMemo(() => {
+    if (history === null) return [];
+    const merged = new Map(history.map(run => [run.id, run]));
+    for (const run of recentRuns) {
+      const saved = merged.get(run.id);
+      if ((!saved && Date.parse(run.created_at) >= snapshot!.startedAt) || (saved && run.updated_at > saved.updated_at)) merged.set(run.id, run);
+    }
+    return [...merged.values()];
+  }, [history, recentRuns, snapshot]);
   const planChoices = [...new Set(runs.map((run) => run.plan_id))].map((id) => ({ id, name: plans.find((plan) => plan.id === id)?.name || runs.find((run) => run.plan_id === id)?.name || id, count: runs.filter((run) => run.plan_id === id).length }));
   const richestPlanId = [...planChoices].sort((a, b) => b.count - a.count)[0]?.id || "";
   const [planId, setPlanId] = useState(initialPlanId || richestPlanId);
@@ -76,8 +103,8 @@ export function AnalysisDashboard({ plans, runs, language, dark, initialPlanId, 
   const [comparisonRunId, setComparisonRunId] = useState(initialRunId || "");
   useEffect(() => { if (initialPlanId) setPlanId(initialPlanId); }, [initialPlanId]);
   useEffect(() => {
-    if (!runs.some((run) => run.plan_id === planId)) setPlanId(richestPlanId);
-  }, [runs, planId, richestPlanId]);
+    if (history !== null && !runs.some((run) => run.plan_id === planId)) setPlanId(richestPlanId);
+  }, [runs, planId, richestPlanId, history]);
   const planRuns = useMemo(() => runs.filter((run) => run.plan_id === planId).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime() || a.id.localeCompare(b.id)), [runs, planId]);
   const levels = [...new Set(planRuns.flatMap((run) => run.scenarios.map((scenario) => scenario.concurrency)))].sort((a, b) => a - b);
   const concurrency = selectedLevel !== null && levels.includes(selectedLevel) ? selectedLevel : undefined;
@@ -94,7 +121,11 @@ export function AnalysisDashboard({ plans, runs, language, dark, initialPlanId, 
   const completed = planRuns.filter((run) => run.status === "completed").length;
   const failed = planRuns.filter((run) => run.status === "failed").length;
   return <div className="dashboard-page">
-    <section className="panel dashboard-toolbar">
+    <PageHeader icon={LineChartIcon} title={t('分析看板')} description={t('对比模型在不同负载下的表现，跟踪每次运行的变化。')} actions={<button type="button" className="ghost" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button>} />
+    {loading && <p className="pagination-feedback" role="status">{t('正在加载完整运行记录…')}</p>}
+    {error && <div className="pagination-feedback error-text" role="alert">{t('运行记录加载失败，请重试。')} <span>{error}</span><button type="button" className="ghost" onClick={() => setRevision(value => value + 1)}>{t('重试')}</button></div>}
+    {history !== null && <>
+    <section className="dashboard-toolbar">
       <label className="field"><span>{t("测试计划")}</span><select value={planId} disabled={!planChoices.length} onChange={(event) => { setPlanId(event.target.value); setComparisonRunId(""); setSelectedLevel(null); }}>{planChoices.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.count} {t("次")} · {plan.id.slice(-6)}</option>)}</select></label>
       <div className="dashboard-view-switch" aria-label={t("看板视图")}>
         {(["comparison", "trend", "stability"] as View[]).map((item) => <button key={item} aria-pressed={view === item} className={view === item ? "active" : ""} onClick={() => setView(item)}>{item === "comparison" ? <GitCompareArrows aria-hidden="true" /> : item === "trend" ? <LineChartIcon aria-hidden="true" /> : <ShieldCheck aria-hidden="true" />}{t(item === "comparison" ? "并发性能对比" : item === "trend" ? "历史运行趋势" : "稳定性")}</button>)}
@@ -111,16 +142,18 @@ export function AnalysisDashboard({ plans, runs, language, dark, initialPlanId, 
       <div className="dashboard-chart-controls">
         {view !== "stability" && <div className="metric-toggle">{(["p50", "p95", "p99", "qps", ...(isLlm ? ["ttft", "tpot", "tokens_per_second"] : [])] as Metric[]).map((item) => <button key={item} aria-pressed={selectedMetric === item} className={selectedMetric === item ? "active" : ""} onClick={() => setMetric(item)}>{item === "tokens_per_second" ? "tokens/s" : item.toUpperCase()}</button>)}</div>}
         {trend ? <label><span>{t("并发档位")}</span><select value={concurrency ?? "all"} disabled={!levels.length} onChange={(event) => setSelectedLevel(event.target.value === "all" ? null : Number(event.target.value))}><option value="all">{t("全部并发档位")}</option>{levels.map((level) => <option key={level} value={level}>{level}</option>)}</select></label>
-          : <label className="dashboard-run-select"><span>{t("运行记录")}</span><select value={comparisonRun?.id || ""} disabled={!planRuns.length} onChange={(event) => { setComparisonRunId(event.target.value); onSelectRun(event.target.value); }}>{[...planRuns].reverse().map((run) => <option key={run.id} value={run.id}>{formatTime(run.created_at, language)} · {t(({ completed: "已完成", failed: "失败", running: "运行中", queued: "等待中", cancelled: "已取消" } as Record<string, string>)[run.status] || run.status)} · {run.id.slice(-6)}</option>)}</select></label>}
+          : <label className="dashboard-run-select"><span>{t("运行记录")}</span><select value={comparisonRun?.id || ""} disabled={!planRuns.length} onChange={(event) => { setComparisonRunId(event.target.value); const run = planRuns.find(item => item.id === event.target.value); if (run) onSelectRun(run); }}>{[...planRuns].reverse().map((run) => <option key={run.id} value={run.id}>{formatTime(run.created_at, language)} · {t(({ completed: "已完成", failed: "失败", running: "运行中", queued: "等待中", cancelled: "已取消" } as Record<string, string>)[run.status] || run.status)} · {run.id.slice(-6)}</option>)}</select></label>}
       </div>
       <p className="dashboard-metric-description">{t(metricLabel(activeMetric))} · {metricUnit(activeMetric)} · {t(activeMetric === "qps" || activeMetric === "tokens_per_second" ? "越高越好" : "越低越好")}</p>
       {drawable ? <ResultChart runs={chartRuns} metric={activeMetric} concurrency={concurrency} trend={trend} language={language} dark={dark} /> : <div className="perf-chart-empty">{t(!planRuns.length ? "该测试计划还没有运行记录" : trend ? "同一模型与并发档位组合至少需要两次有效运行，才能展示趋势。" : "当前指标暂无有效结果，缺失值不会显示为零。")}</div>}
       <p className="perf-chart-caption">{t(trend ? "每个点对应一条独立运行记录，不合并时间相近的运行。" : "仅比较本次运行，不跨运行平均分位数。")}</p>
       <p className="perf-chart-caption">{t(["ttft", "tpot", "tokens_per_second"].includes(activeMetric) ? llmMetricTip(activeMetric as "ttft" | "tpot" | "tokens_per_second") : activeMetric === "qps" ? "QPS 表示每秒成功完成的请求数。" : activeMetric === "error" ? "失败率等于失败请求数除以总请求数。" : "P50 是中位延迟；P95/P99 表示 95%/99% 的成功请求在该时间内完成。")}</p>
-      <h3 className="dashboard-data-heading">{t("指标数值明细")}</h3>
+      <details className="dashboard-data-disclosure" open><summary>{t("指标数值明细")}</summary>
       <PaginatedList items={rows} language={language} label={t("指标数值明细")} resetKey={JSON.stringify([planId, view, concurrency, activeMetric, trend ? null : comparisonRun?.id])}>
         {(pageRows) => <div className="table-scroll"><table className="dashboard-data-table"><thead><tr>{trend && <th>{t("运行记录")}</th>}<th>{t("模型")}</th><th>{t("并发数")}</th><th>{t(metricLabel(activeMetric))} ({metricUnit(activeMetric)})</th><th>{t("成功请求")}</th><th>{t("失败请求")}</th></tr></thead><tbody>{pageRows.map(({ run, scenario }) => <tr key={`${run.id}-${scenario.id}`}>{trend && <td>{formatTime(run.created_at, language)}<small className="mono">{run.id.slice(-6)}</small></td>}<td>{modelLabel(scenario)}</td><td>{scenario.concurrency}</td><td>{formatValue(metricValue(scenario, activeMetric), activeMetric)}</td><td>{scenario.result?.success_count ?? "—"}</td><td>{scenario.result?.failure_count ?? "—"}</td></tr>)}{!rows.length && <tr><td colSpan={trend ? 6 : 5}>{t("当前筛选条件下暂无可绘制结果")}</td></tr>}</tbody></table></div>}
       </PaginatedList>
+      </details>
     </section>
+    </>}
   </div>;
 }

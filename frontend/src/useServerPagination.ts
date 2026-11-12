@@ -47,7 +47,7 @@ export function useServerPagination<Item>(fetchPage: (page: number, size: number
   const current = result?.key === key && result.data.page === page && result.data.page_size === pageSize;
   return {
     items: current ? result.data.items : [], total: result?.key === key ? result.data.total : 0,
-    page, pageSize, loading: loading || (!current && !error), error,
+    page, pageSize, loading: loading || (!current && !error) || (filters.q || "").trim() !== search, error,
     onPageChange: (next: number) => { setFailure({ key, message: "" }); setPosition({ page: next, pageSize, key }); },
     onPageSizeChange: (size: number) => { setFailure({ key, message: "" }); setPosition({ page: 1, pageSize: size, key }); },
     retry: () => setRetry(value => value + 1),

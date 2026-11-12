@@ -25,6 +25,8 @@ DATASET_TABLE_COLUMNS = {
     "datasets": ("id", "created_at", "updated_at", "payload"),
     "dataset_items": ("id", "dataset_id", "created_at", "updated_at", "payload"),
     "dataset_sources": ("dataset_id", "payload"),
+    "dataset_generation_traces": ("id", "dataset_id", "created_at", "payload"),
+    "dataset_generation_records": ("id", "dataset_id", "trace_id", "kind", "created_at", "payload"),
 }
 
 
@@ -59,6 +61,9 @@ class RunStore:
             ]
             connection.execute(f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(definitions)})")
         connection.execute("CREATE INDEX IF NOT EXISTS dataset_items_dataset_idx ON dataset_items(dataset_id, created_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS dataset_generation_trace_idx ON dataset_generation_records(dataset_id,trace_id,kind,created_at,id)")
+        from backend.evaluation_store import create_evaluation_tables
+        create_evaluation_tables(connection)
 
     def initialize(self) -> None:
         with self._session() as connection:
@@ -104,6 +109,9 @@ class RunStore:
                         "UPDATE runs SET status = %s, updated_at = %s, payload = %s WHERE id = %s",
                         (payload["status"], payload["updated_at"], json.dumps(payload), row["id"]),
                     )
+
+        from backend.evaluation_store import EvaluationStore
+        EvaluationStore(self).recover_interrupted()
 
     def create(self, run: dict[str, Any]) -> None:
         with self._session() as connection:
@@ -220,6 +228,37 @@ class RunStore:
         configs = [json.loads(row["payload"]) for row in rows]
         return [item for item in configs if not benchmark or any(model["benchmark"] == benchmark for model in configured_models(item))]
 
+    def set_provider_enabled(self, provider: str, enabled: bool) -> list[dict[str, Any]]:
+        """Update a provider group atomically without rewriting model flags or credentials."""
+        with self._session() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM service_configs WHERE payload::jsonb->>'provider' = %s ORDER BY id FOR UPDATE",
+                (provider,),
+            ).fetchall()
+            configs = [json.loads(row["payload"]) for row in rows]
+            for config in configs:
+                config.update(enabled=enabled, updated_at=utc_now())
+                connection.execute("UPDATE service_configs SET updated_at=%s, payload=%s WHERE id=%s",
+                                   (config["updated_at"], json.dumps(config, ensure_ascii=False), config["id"]))
+        return configs
+
+    def set_model_enabled(self, config_id: str, alias: str, enabled: bool) -> dict[str, Any] | None:
+        with self._session() as connection:
+            row = connection.execute("SELECT payload FROM service_configs WHERE id=%s FOR UPDATE", (config_id,)).fetchone()
+            if not row:
+                return None
+            config = json.loads(row["payload"])
+            models = configured_models(config)
+            model = next((m for m in models if m.get("alias") == alias), None)
+            model = model or next((m for m in models if m.get("name") == alias), None)
+            if model is None:
+                return None
+            model["enabled"] = enabled
+            config.update(models=models, updated_at=utc_now())
+            connection.execute("UPDATE service_configs SET updated_at=%s, payload=%s WHERE id=%s",
+                               (config["updated_at"], json.dumps(config, ensure_ascii=False), config_id))
+        return config
+
     def delete_service_config(self, config_id: str) -> bool:
         with self._session() as connection:
             cursor = connection.execute("DELETE FROM service_configs WHERE id = %s", (config_id,))
@@ -260,13 +299,13 @@ class RunStore:
 
     def _page(self, table: str, order_column: str, page: int, page_size: int, *,
               q: str = "", status: str | None = None, benchmark: str | None = None,
-              repeat_mode: str | None = None) -> dict[str, Any]:
+              repeat_mode: str | None = None, ids_only: bool = False, evaluation_purpose: str | None = None) -> dict[str, Any]:
         conditions = []
         parameters: list[Any] = []
         if q.strip():
             conditions.append(sql.SQL("strpos(lower(concat_ws(' ', id, payload::jsonb->>'name', payload::jsonb->>'plan_id')), lower(%s)) > 0"))
             parameters.append(q.strip())
-        for field, value, default in (("status", status, "stopped"), ("benchmark", benchmark, ""), ("repeat_mode", repeat_mode, "once")):
+        for field, value, default in (("status", status, "stopped"), ("benchmark", benchmark, ""), ("repeat_mode", repeat_mode, "once"), ("evaluation_purpose", evaluation_purpose, "both")):
             if value:
                 conditions.append(sql.SQL("COALESCE(payload::jsonb->>%s, %s) = %s"))
                 parameters.extend((field, default, value))
@@ -274,6 +313,11 @@ class RunStore:
         with self._session() as connection:
             connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             total = connection.execute(sql.SQL("SELECT COUNT(*) AS total FROM {}{}").format(sql.Identifier(table), where), parameters).fetchone()["total"]
+            if ids_only:
+                if total > 20000:
+                    raise ValueError("匹配记录超过 20000 条，请缩小筛选范围后再全选")
+                rows = connection.execute(sql.SQL("SELECT id FROM {}{} ORDER BY id").format(sql.Identifier(table), where), parameters).fetchall()
+                return {"ids": [row["id"] for row in rows], "total": total}
             page = min(page, max(1, (total + page_size - 1) // page_size))
             rows = connection.execute(
                 sql.SQL("SELECT payload FROM {}{} ORDER BY {} DESC, id DESC LIMIT %s OFFSET %s").format(

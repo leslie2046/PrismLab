@@ -1,6 +1,6 @@
 export type AuthUser = { id: string; provider: string; username: string; name: string; nickname?: string; avatar_url?: string | null };
 export type ModelCredential = { id?: string; name: string; server_url: string; model_uid?: string | null; api_key?: string | null; copy_key_from?: string | null; has_api_key?: boolean; api_key_masked?: string | null };
-export type ModelConfig = { name: string | null; alias?: string | null; benchmark: string; base_url: string | null; credentials?: ModelCredential[] };
+export type ModelConfig = { enabled?: boolean; name: string | null; alias?: string | null; benchmark: string; base_url: string | null; credentials?: ModelCredential[] };
 export type ProviderIcon = "cube" | "spark" | "cloud" | "bolt" | "waves" | "database";
 
 export type Provider = {
@@ -31,6 +31,8 @@ export type LlmParameter = { type: "integer" | "number" | "enum"; label: string;
 export type LlmParameters = { model: string; provider: string; version: string; source?: string; model_specific: boolean; can_refresh: boolean; metadata: { context_window?: number; context_length?: number; max_output_tokens?: number; fetched_at?: string }; parameters: Record<string, LlmParameter> };
 
 export type ServiceConfig = {
+  enabled?: boolean;
+  app_id?: string | null;
   dataset_id?: string | null;
   id: string;
   name: string;
@@ -122,11 +124,31 @@ export type TestPlan = {
   updated_at: string;
 };
 
+export type DatasetEvaluationSummary = {
+  id: string; name: string; status: string; created_at: string; case_count: number;
+  metrics: Record<string, { mean: number | null; scored: number }>;
+};
 export type Dataset = {
-  id: string; name: string; description: string; status: 'ready' | 'generating' | 'failed';
+  id: string; name: string; description: string; status: 'ready' | 'generating' | 'failed' | 'cancelled';
+  evaluation_purpose?: 'rag' | 'retrieval' | 'both';
   source_type: 'manual' | 'import' | 'documents' | 'dify' | 'goldens' | 'scratch'; item_count: number; target_size?: number;
   llm?: LlmSelection; sdk?: string; sdk_version?: string; generation_usage?: { requests: number; output_tokens: number; cost: number | null }; source_chunk_count?: number; error?: string | null; created_at: string; updated_at: string;
+  data_sources?: DatasetSource[]; dify_config_id?: string | null; dify_config_ids?: string[]; generation_config?: DatasetGenerationOptions; generation_options?: DatasetGenerationOptions;
+  build_mode?: 'append' | 'replace_generated'; build_progress?: number; build_target?: number;
+  build_retry_count?: number; build_retry_limit?: number; build_last_error?: string | null;
+  build_stage?: string; build_requests?: number; build_active_requests?: number; build_output_tokens?: number;
+  build_started_at?: string; build_request_started_at?: string | null;
+  latest_evaluation?: DatasetEvaluationSummary | null;
 };
+export type DatasetGenerationOptions = {
+  generation_backend?: 'deepeval' | 'ragas' | 'ragas_native'; embedding_model?: LlmSelection | null; ragas_query_distribution?:Record<string,number>; ragas_personas?:Array<{name:string;role_description:string}>; size?: number; method?: 'contexts' | 'goldens' | 'scratch'; llm?: LlmSelection | null; critic_llm?: LlmSelection | null;
+  seed_dataset_id?: string | null; dify_config_id?: string | null; dify_config_ids?: string[]; prompt?: string | null;
+  include_expected_output?: boolean; quality_threshold?: number; max_quality_retries?: number; num_evolutions?: number;
+  max_concurrent?: number; context_size?: number; evolutions?: Record<string, number>;
+  task?: string; scenario?: string; input_format?: string; expected_output_format?: string;
+};
+export type DatasetSource = { kind: 'documents' | 'dify' | 'import' | 'manual' | 'goldens' | 'scratch'; name: string; chunk_count: number; config_id?: string; dataset_id?: string };
+export type DatasetSources = { items: DatasetSource[]; revision: number; dify_config_id?: string | null; dify_config_ids?: string[]; synced_at?: string | null };
 export type Golden = {
   input: string; expected_output?: string | null; context?: string[] | null;
   actual_output?: string | null; retrieval_context?: unknown[] | null;
@@ -137,6 +159,17 @@ export type Golden = {
   [key: string]: unknown;
 };
 export type DatasetItem = Golden & {
-  id: string; dataset_id: string; status: 'active' | 'archived'; created_at: string; updated_at: string;
+  generation_trace_id?: string; generation_record_id?: string;
+  id: string; dataset_id: string; origin?: 'manual' | 'import' | 'generated'; status: 'active' | 'archived'; created_at: string; updated_at: string;
 };
-export type DatasetSettings = { default_llm: LlmSelection | null; prompt: string; default_prompt: string };
+export type DatasetSettings = { default_reranker?: LlmSelection | null; max_concurrent: number; default_embedding_model: LlmSelection | null; default_judge_llm: LlmSelection | null; scoring_engine: 'deepeval' | 'ragas'; judge_prompt: string; default_judge_prompt: string; default_llm: LlmSelection | null; default_critic_llm: LlmSelection | null; prompt: string; default_prompt: string; critic_prompt: string; default_critic_prompt: string };
+
+export type GenerationDetails = {
+  availability: 'recorded' | 'unavailable'; edited: boolean;
+  sample: {input: string; expected_output?: string | null; context?: string[] | null};
+  trace: null | {id: string; created_at: string; backend: string; method: string; prompt: string; critic_prompt?: string;
+    options: Record<string, unknown>; models: Record<string, {model?: string} | null>;
+    sources: Array<{content?: string; golden?: Golden; metadata?: Record<string, unknown>}>};
+};
+export type GenerationRequestSummary = {id: string; sequence: number | string; created_at: string; role: string; model: string};
+export type GenerationRequest = GenerationRequestSummary & {request: {model: string; messages: Array<{role: string; content: string}>; [key: string]: unknown}};

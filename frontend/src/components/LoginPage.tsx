@@ -74,9 +74,9 @@ export function LoginPage({ status, loading, unavailable, onRetry, onLogin }: {
         <button type="button" className="icon-button" aria-label={t("切换主题")} title={t("切换主题")} onClick={() => { localStorage.setItem("perflab-theme", dark ? "light" : "dark"); setDark(!dark); }}>{dark ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button>
       </div>
     </header>
-    <div className="login-body">
+    <div className="login-body"><aside className="login-context"><span className="login-context-label">PrismLab Workspace</span><h2>{t('让每一次模型选择，都有据可依。')}</h2><p>{t('从模型调试、性能测试到 RAG 质量评测，在同一个工作空间完成。')}</p><div className="login-capabilities"><span>Playground</span><span>{t('性能测试')}</span><span>{t('评测数据集')}</span></div></aside>
       <section className="login-panel" aria-labelledby="login-title" aria-busy={loading || busy}>
-        <div className="login-heading"><h1 id="login-title" className="login-logo" aria-label={t("登录 PrismLab")}><BrandLogo /><span>PrismLab</span></h1></div>
+        <div className="login-heading"><h1 id="login-title">{t("登录 PrismLab")}</h1><p>{t("使用你的账号进入工作空间")}</p></div>
         {loading ? <div className="login-status" role="status"><LoaderCircle className="login-spinner" aria-hidden="true" />{t("正在检查登录状态…")}</div> : unavailable ? <div className="login-retry"><p role="alert"><AlertCircle aria-hidden="true" />{t("无法连接登录服务，请检查网络后重试。")}</p><button className="secondary" type="button" onClick={onRetry}>{t("重试")}</button></div> : <>
           {error && <div className="login-error" role="alert"><AlertCircle aria-hidden="true" /><span>{t(error)}</span></div>}
           {status?.password_enabled && <form className="login-form" onSubmit={login}>

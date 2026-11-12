@@ -168,3 +168,125 @@ class CliIntegrationTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+class PlaygroundPartialStreamTests(unittest.TestCase):
+    def response(self, lines):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_lines.return_value = lines
+        return response
+
+    def test_strict_stream_still_rejects_missing_end_marker(self):
+        with patch('shared.llm_stream.requests.post', return_value=self.response([
+            event({'content': 'partial'})
+        ])):
+            with self.assertRaises(ValueError):
+                stream_chat('http://localhost/v1/chat/completions', 'm', None, 'q')
+
+    def test_playground_keeps_content_when_gateway_closes_after_delta(self):
+        from backend.playground import stream_playground
+        from backend.schemas import PlaygroundRequest
+        with patch('shared.llm_stream.requests.post', return_value=self.response([
+            event({'content': 'partial answer'})
+        ])):
+            events = [json.loads(line) for line in stream_playground(
+                PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q'),
+                {'base_url': 'http://fixture/v1/chat/completions', 'model': 'm'}, 'secret')]
+        self.assertEqual([item['type'] for item in events], ['delta', 'result'])
+        result = events[-1]['result']
+        self.assertEqual(result['data']['content'], 'partial answer')
+        self.assertTrue(result['data']['incomplete'])
+        self.assertTrue(result['truncated'])
+
+    def test_playground_keeps_deltas_when_transport_fails_after_reasoning(self):
+        import requests
+        from backend.playground import stream_playground
+        from backend.schemas import PlaygroundRequest
+
+        def lines():
+            yield event({'reasoning_content': 'thinking'})
+            raise requests.exceptions.ChunkedEncodingError('upstream closed')
+
+        response = self.response([])
+        response.iter_lines.return_value = lines()
+        with patch('shared.llm_stream.requests.post', return_value=response):
+            events = [json.loads(line) for line in stream_playground(
+                PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q'),
+                {'base_url': 'http://fixture/v1/chat/completions', 'model': 'm'}, 'secret')]
+        self.assertEqual([item['type'] for item in events], ['delta', 'result'])
+        self.assertEqual(events[-1]['result']['data']['reasoning_content'], 'thinking')
+        self.assertTrue(events[-1]['result']['data']['incomplete'])
+
+    def test_reasoning_longer_than_30_seconds_can_finish_with_answer(self):
+        from backend.playground import stream_playground
+
+        clock = [0]
+
+        def lines():
+            clock[0] = 1
+            yield event({'reasoning_content': 'thinking'})
+            clock[0] = 35
+            yield event({'content': 'final answer'}, 'stop', {'completion_tokens': 50})
+            yield 'data: [DONE]'
+
+        response = self.response(lines())
+        request = PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q')
+        self.assertEqual(request.timeout_seconds, 300)
+        with patch('shared.llm_stream.requests.post', return_value=response) as post, \
+                patch('shared.llm_stream.time.perf_counter', side_effect=lambda: clock[0]):
+            events = [json.loads(line) for line in stream_playground(
+                request, {'base_url': 'http://fixture', 'model': 'm'}, 'secret')]
+        result = events[-1]['result']
+        self.assertEqual([e['type'] for e in events], ['delta', 'delta', 'result'])
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['data']['no_answer'])
+        self.assertNotIn('incomplete', result['data'])
+        self.assertEqual(result['data']['content'], 'final answer')
+        self.assertEqual(result['data']['reasoning_content'], 'thinking')
+        self.assertEqual(result['data']['finish_reason'], 'stop')
+        self.assertEqual(post.call_args.kwargs['timeout'], (5, 300))
+
+    def test_explicit_deadline_retains_reasoning_and_identifies_missing_answer(self):
+        from backend.playground import stream_playground
+
+        clock = [0]
+
+        def lines():
+            clock[0] = 1
+            yield event({'reasoning_content': 'thinking'})
+            clock[0] = 31
+            yield event({'content': 'too late'}, 'stop')
+
+        request = PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q', timeout_seconds=30)
+        with patch('shared.llm_stream.requests.post', return_value=self.response(lines())), \
+                patch('shared.llm_stream.time.perf_counter', side_effect=lambda: clock[0]):
+            events = [json.loads(line) for line in stream_playground(
+                request, {'base_url': 'http://fixture', 'model': 'm'}, 'secret')]
+        result = events[-1]['result']
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['data']['incomplete_reason'], 'deadline')
+        self.assertEqual(result['data']['timeout_seconds'], 30)
+        self.assertTrue(result['data']['no_answer'])
+        self.assertEqual(result['data']['content'], '')
+        self.assertEqual(result['data']['reasoning_content'], 'thinking')
+
+    def test_output_limit_during_reasoning_is_not_a_successful_answer(self):
+        from backend.playground import stream_playground
+        request = PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q')
+        with patch('shared.llm_stream.requests.post', return_value=self.response([
+                event({'reasoning_content': 'thinking'}, 'length'), 'data: [DONE]'])):
+            events = [json.loads(line) for line in stream_playground(
+                request, {'base_url': 'http://fixture', 'model': 'm'}, 'secret')]
+        result = events[-1]['result']
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['data']['no_answer'])
+        self.assertEqual(result['data']['incomplete_reason'], 'output_limit')
+
+    def test_playground_timeout_limits_preserve_non_llm_default(self):
+        self.assertEqual(PlaygroundRequest(benchmark='embedding', provider_id='fixture', text='q').timeout_seconds, 30)
+        for timeout in (1, 300, 600):
+            self.assertEqual(PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q',
+                                              timeout_seconds=timeout).timeout_seconds, timeout)
+        for timeout in (0, 601):
+            with self.assertRaises(ValidationError):
+                PlaygroundRequest(benchmark='llm', provider_id='fixture', query='q', timeout_seconds=timeout)

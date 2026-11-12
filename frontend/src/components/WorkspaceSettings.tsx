@@ -1,3 +1,4 @@
+import { PageHeader } from "./PageHeader";
 import { useCallback, useEffect, useState } from "react";
 import { AlertCircle, Check, MoreHorizontal, Pencil, Search, UserPlus, Users } from "lucide-react";
 import { useAuth } from "../auth";
@@ -79,7 +80,7 @@ export function WorkspaceSettings({ section, language }: {
   }
 
   if (!auth.user || !workspace) return <section className="panel"><p>{t("请先登录后管理空间。")}</p></section>;
-  return <div className="workspace-settings-page">
+  return <div className="workspace-settings-page">{section !== 'account' && <PageHeader icon={Users} title={t(section === 'members' ? '成员与权限' : '收到的邀请')} description={t(section === 'members' ? '管理空间成员与团队访问权限' : '查看邀请并加入团队空间')} />}
     {error && <div className="workspace-feedback error" role="alert"><AlertCircle aria-hidden="true" /><span>{error}</span><button type="button" className="ghost" disabled={loading || busy} onClick={() => void reload()}>{t("重试")}</button></div>}
     {notice && <p className="workspace-feedback success" role="status"><Check aria-hidden="true" />{notice}</p>}
     {loading && <p className="workspace-muted" role="status">{t("正在加载…")}</p>}

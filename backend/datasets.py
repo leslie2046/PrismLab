@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import logging
 import math
 import re
 import zipfile
@@ -14,14 +15,72 @@ import requests
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from backend.dataset_trace import GenerationTrace
+from backend.dataset_build_control import BuildControl, BuildRepository, build_state, RETRY_LIMIT, RequestLimitExceeded
+from shared.request_control import GenerationStopped, current_control
 from backend.dify_names import api_root
 from backend.schemas import ProviderSelection
 from backend.dataset_golden import DatasetItem, ALIASES, APP_FIELDS, Golden
-from backend.deepeval_generation import generate_items
+from backend.deepeval_generation import DEFAULT_CRITIC_PROMPT, generate_items
+from backend.ragas_generation import generate_items as generate_ragas_items, RAGAS_BACKEND_VERSION
 from deepeval.dataset.utils import DELIMITER, reconstruct_retrieval_context
 
 MAX_UPLOAD = 10 * 1024 * 1024
 MAX_SOURCE_CHARS = 2_000_000
+logger = logging.getLogger(__name__)
+
+
+def source_reference_id(chunk):
+    """Return the ID emitted by the retrieval target for this source chunk."""
+    metadata = chunk.get('metadata') or {}
+    return str(metadata.get('segment_id') or chunk.get('id')) if (metadata.get('segment_id') or chunk.get('id')) else None
+
+
+def attach_source_annotations(items, chunks):
+    """Carry generation provenance into retrieval-evaluation annotations.
+
+    The generator returns grounded reference contexts, while retrieval metrics
+    need stable source chunk IDs. Match only against the exact source snapshot
+    used for this batch; never invent IDs for scratch or unmatched content.
+    """
+    by_id = {str(chunk.get('id')): chunk for chunk in chunks if chunk.get('id')}
+    for item in items:
+        metadata = dict(item.get('additional_metadata') or {})
+        provenance = dict(metadata.get('prismlab_generation') or {})
+        source_ids = [source_reference_id(by_id[str(value)]) for value in provenance.get('source_ids') or [] if str(value) in by_id and source_reference_id(by_id[str(value)])]
+        contexts = item.get('context') or []
+        if isinstance(contexts, str):
+            contexts = [contexts]
+        for chunk in chunks:
+            content = str(chunk.get('content') or '')
+            if not content:
+                continue
+            if any(str(context).strip() and (str(context).strip() in content or content in str(context).strip()) for context in contexts):
+                reference_id = source_reference_id(chunk)
+                if reference_id and reference_id not in source_ids:
+                    source_ids.append(reference_id)
+        if source_ids:
+            provenance.update(source_ids=source_ids, source_mapping='matched')
+            metadata['prismlab_generation'] = provenance
+            item['additional_metadata'] = metadata
+    return items
+
+
+def model_request_failure(error):
+    """Return a safe, actionable error without exposing URLs, keys or bodies."""
+    response = getattr(error, 'response', None)
+    status = response.status_code if response is not None else None
+    reasons = {
+        400: '模型服务拒绝了请求参数（HTTP 400），请检查所选模型与参数是否兼容。',
+        401: '模型服务认证失败（HTTP 401），请检查 API Key 是否有效。',
+        402: '模型服务返回余额或额度不足（HTTP 402），请充值、恢复额度或更换可用模型后重试。',
+        403: '模型服务拒绝访问（HTTP 403），请检查 API Key 的模型权限。',
+        404: '模型服务或模型不存在（HTTP 404），请检查请求地址与模型名称。',
+        422: '模型服务无法处理请求参数（HTTP 422），请检查所选模型与参数是否兼容。',
+    }
+    if status is not None and 400 <= status < 500 and status not in {408, 429}:
+        return reasons.get(status, f'模型服务拒绝请求（HTTP {status}），请检查模型服务配置后重试。')
+    return None
 # Inspired by Dify's knowledge-base Q&A indexing: standalone, detailed, grounded Q&A.
 # Adapted to structured RAG evaluation records, with explicit source citations.
 LEGACY_DEFAULT_PROMPT = """你是一位负责构建 RAG 评测数据集的知识库专家。阅读提供的知识片段，生成高质量的问题与参考答案。
@@ -45,6 +104,7 @@ class StrictModel(BaseModel):
 
 
 class DatasetInfo(StrictModel):
+    evaluation_purpose: Literal['rag', 'retrieval', 'both'] = 'both'
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default='', max_length=2000)
 
@@ -57,12 +117,17 @@ class DatasetInfo(StrictModel):
 
 
 class GenerationOptions(StrictModel):
+    generation_backend: Literal['deepeval', 'ragas', 'ragas_native'] = 'deepeval'
     size: int = Field(default=50, ge=1, le=500, strict=True)
     llm: ProviderSelection | None = None
     dify_config_id: str | None = Field(default=None, max_length=64)
+    dify_config_ids: list[str] = Field(default_factory=list, max_length=100)
     language: Literal['zh-CN', 'en'] = 'zh-CN'
     method: Literal['contexts', 'goldens', 'scratch'] = 'contexts'
     seed_dataset_id: str | None = Field(default=None, max_length=64)
+    embedding_model: ProviderSelection | None = None
+    ragas_query_distribution: dict[Literal['single_hop','multi_hop_abstract','multi_hop_specific'],float] = Field(default_factory=lambda:{'single_hop':1})
+    ragas_personas: list[dict[str,str]] = Field(default_factory=list,max_length=10)
     critic_llm: ProviderSelection | None = None
     include_expected_output: bool = True
     quality_threshold: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
@@ -79,26 +144,57 @@ class GenerationOptions(StrictModel):
 
     @model_validator(mode='after')
     def valid_options(self):
-        if not self.evolutions or any(not math.isfinite(v) or v < 0 for v in self.evolutions.values()) or sum(self.evolutions.values()) <= 0:
+        if self.generation_backend == 'deepeval' and (not self.evolutions or any(not math.isfinite(v) or v < 0 for v in self.evolutions.values()) or sum(self.evolutions.values()) <= 0):
             raise ValueError('演化权重必须非负，且总和大于 0')
+        if self.generation_backend == 'ragas_native':
+            if self.method != 'contexts':
+                raise ValueError('官方 RAGAS 生成需要参考资料')
+            if not self.ragas_query_distribution or not all(math.isfinite(v) and v>=0 for v in self.ragas_query_distribution.values()) or sum(self.ragas_query_distribution.values())<=0:
+                raise ValueError('查询分布需要有限的非负权重且总和大于零')
+            if any(set(p) != {'name','role_description'} or any(not v.strip() or len(v)>2000 for v in p.values()) for p in self.ragas_personas):
+                raise ValueError('Persona 需要 name 和 role_description')
         if self.method == 'goldens' and not self.seed_dataset_id:
             raise ValueError('请选择种子数据集')
         if self.method == 'scratch' and not self.task.strip():
             raise ValueError('请填写生成任务')
-        if self.method == 'scratch' and self.num_evolutions and not any(v > 0 for k, v in self.evolutions.items() if k != 'MULTICONTEXT'):
+        if self.generation_backend == 'deepeval' and self.method == 'scratch' and self.num_evolutions and not any(v > 0 for k, v in self.evolutions.items() if k != 'MULTICONTEXT'):
             raise ValueError('无资料生成不支持多上下文演化')
-        if self.method != 'contexts' and self.dify_config_id:
+        ids = list(dict.fromkeys([*self.dify_config_ids, *([self.dify_config_id] if self.dify_config_id else [])]))
+        if len(ids) > 100 or any(not value.strip() or len(value) > 64 for value in ids):
+            raise ValueError('请选择 1–100 个有效知识库')
+        self.dify_config_ids = ids
+        self.dify_config_id = ids[0] if ids else None
+        if self.method != 'contexts' and ids:
             raise ValueError('此生成方式不支持 Dify 数据源')
         return self
 
 
 class DatasetSettings(StrictModel):
+    max_concurrent: int = Field(default=3, ge=1, le=10, strict=True)
     default_llm: ProviderSelection | None = None
+    default_embedding_model: ProviderSelection | None = None
+    default_critic_llm: ProviderSelection | None = None
+    default_judge_llm: ProviderSelection | None = None
+    default_reranker: ProviderSelection | None = None
+    scoring_engine: Literal['deepeval', 'ragas'] = 'deepeval'
+    judge_prompt: str | None = Field(default=None, min_length=1, max_length=20000)
+    prompt: str | None = Field(default=None, min_length=1, max_length=20000)
+    critic_prompt: str | None = Field(default=None, min_length=1, max_length=20000)
+
+    @field_validator('prompt', 'critic_prompt', 'judge_prompt')
+    @classmethod
+    def nonblank(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('提示词不能为空')
+        return value
+
+
+class DatasetGenerationConfig(GenerationOptions):
     prompt: str | None = Field(default=None, min_length=1, max_length=20000)
 
     @field_validator('prompt')
     @classmethod
-    def nonblank(cls, value):
+    def valid_prompt(cls, value):
         if value is not None and not value.strip():
             raise ValueError('提示词不能为空')
         return value
@@ -221,6 +317,9 @@ def fetch_dify_chunks(config, key):
     def pages(url):
         for page in range(1, 1001):
             try:
+                control = current_control.get()
+                if control:
+                    control.check()
                 response = requests.get(url, headers=headers, params={'page': page, 'limit': 100},
                                         timeout=(5, 30), allow_redirects=False)
                 if not 200 <= response.status_code < 300:
@@ -267,21 +366,61 @@ def fetch_dify_chunks(config, key):
     return chunks
 
 
-def build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=None, critic=None):
+def build_dataset(*args, **kwargs):
+    try:
+        return _build_dataset(*args, **kwargs)
+    except GenerationStopped:
+        # Cancellation may race any error/finalization write; fencing wins.
+        return
+
+
+def _build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=None, critic=None, embedding=None, build_token=None):
     """Persist each batch; bounded retries; failed builds retain their reviewable output."""
     usage = {'requests': 0, 'output_tokens': 0}
+    replacing = False
+    scope = None
     try:
+        if build_token is None:
+            state = build_state()
+            def start(c, d):
+                if d['status'] != 'generating':
+                    raise GenerationStopped()
+                d.update(state)
+            repo.mutate(identifier, start, generating=True)
+            build_token = state['build_token']
+        control = BuildControl(repo, identifier, build_token)
+        control.check()
+        scope = current_control.set(control)
+        repo = BuildRepository(repo, build_token)
         opts = options or repo.get(identifier).get('generation_options', {})
         if dify:
             if not chunks:
-                chunks = fetch_dify_chunks(*dify)
+                from backend.dataset_sources import tag_knowledge
+                accesses = [dify] if isinstance(dify, tuple) else dify
+                chunks = []
+                for source, source_key in accesses:
+                    chunks.extend(tag_knowledge(fetch_dify_chunks(source, source_key), source))
+                    if sum(len(item['content']) for item in chunks) > MAX_SOURCE_CHARS or len(chunks) > 10000:
+                        raise ValueError('来源资料合计不能超过 200 万字符或 10000 个片段')
                 repo.save_sources(identifier, chunks)
         repo.mutate(identifier, lambda c, d: d.update(source_chunk_count=len(chunks)), generating=True)
         dataset = repo.get(identifier)
+        opts = {**opts, 'critic_prompt': dataset.get('critic_prompt') or DEFAULT_CRITIC_PROMPT}
+        if opts.get('generation_backend') == 'ragas_native':
+            from backend.ragas_native import generate_items as native_generate
+            generator = lambda *args,**kwargs: native_generate(*args,**kwargs,embedding=embedding)
+        else:
+            generator = generate_ragas_items if opts.get('generation_backend', 'deepeval') == 'ragas' else generate_items
         size = dataset['target_size']
-        existing = [item['input'] for item in repo.items(identifier, size=20000)['items']]
+        replacing = dataset.get('build_mode') == 'replace_generated'
+        original = repo.items(identifier, size=20000)['items']
+        retained = [item for item in original if not replacing or not repo.is_generated(item, dataset)]
+        existing = [item['input'] for item in retained]
+        staged = []
+        baseline = dataset.get('build_baseline', 0)
+        repo.mutate(identifier, lambda c, d: d.update(build_progress=max(0, len(existing) - baseline)), generating=True)
         # Spread sampling over the entire source, including the final chunks.
-        batch_count = math.ceil(size / 5)
+        batch_count = math.ceil(dataset.get('build_target', size) / 5)
         context_size = opts.get('context_size', 2) if opts.get('method', 'contexts') == 'contexts' else 1
         selected = []
         for i in range(batch_count):
@@ -289,18 +428,66 @@ def build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=N
             selected.append(chunks[start:start + context_size])
         attempts = 0
         last_error = False
-        while len(existing) < size and attempts < batch_count * 3:
-            batch = selected[attempts % len(selected)]
+        consecutive_failures = 0
+        while len(existing) < size and attempts < (RETRY_LIMIT + 1 if opts.get('generation_backend')=='ragas_native' else batch_count * (RETRY_LIMIT + 1)):
+            batch = chunks if opts.get('generation_backend')=='ragas_native' else selected[attempts % len(selected)]
+            control.check()
             attempts += 1
+            repo.mutate(identifier, lambda c, d: d.update(build_attempt=attempts, build_stage='generating'), generating=True)
+            trace = GenerationTrace(repo, identifier, {
+                'scope': 'batch', 'attempt': attempts, 'backend': opts.get('generation_backend', 'deepeval'),
+                'method': opts.get('method', 'contexts'), 'prompt': prompt,
+                'critic_prompt': opts.get('critic_prompt'),
+                'options': opts, 'models': {
+                    role: {k: model.get(k) for k in ('provider', 'name', 'model', 'model_revision') if model.get(k) is not None}
+                    for role, model in (dataset.get('generation_models') or {'generator': config, 'critic': critic[0] if critic else config}).items() if model
+                },
+                'sources': batch,
+            })
+            control.trace = trace
             try:
-                items = generate_items(batch, min(5, size - len(existing)), config, key, prompt, existing,
-                                       opts, critic, usage)
-            except (ValueError, requests.RequestException):
+                items = generator(batch, size - len(existing) if opts.get('generation_backend')=='ragas_native' else min(5, size - len(existing)), config, key, prompt, existing,
+                                  opts, critic, usage)
+                control.check()
+                items = attach_source_annotations(items, batch)
+                if not items:
+                    raise ValueError('No unique valid samples')
+            except (ValueError, requests.RequestException) as error:
+                response = getattr(error, 'response', None)
+                logger.warning('Dataset %s generation request failed: %s HTTP %s',
+                               identifier, type(error).__name__,
+                               response.status_code if response is not None else None)
+                failure = model_request_failure(error)
+                if failure:
+                    preserved = '重新构建已停止，原有数据已保留。' if replacing else '构建已停止，已生成数据保留。'
+                    repo.mutate(identifier, lambda c, d: d.update(status='failed', error=failure + preserved), generating=True)
+                    return
                 last_error = True
+                consecutive_failures += 1
+                reason = ('模型请求超时（每次最多等待 180 秒）。' if isinstance(error, requests.Timeout) else
+                          f'模型服务暂时不可用（HTTP {response.status_code}）。' if response is not None else
+                          '模型连接失败。' if isinstance(error, requests.RequestException) else
+                          '模型未返回有效且不重复的样本。')
+                exhausted = consecutive_failures > RETRY_LIMIT
+                repo.mutate(identifier, lambda c, d: d.update(
+                    build_last_error=reason, build_retry_count=min(RETRY_LIMIT, consecutive_failures),
+                    build_stage='stopped' if exhausted else 'retrying'), generating=True)
+                if exhausted:
+                    preserved = '重新构建已停止，原有数据已保留。' if replacing else '构建已停止，已生成数据保留。'
+                    repo.mutate(identifier, lambda c, d: d.update(status='failed',
+                        error=reason + f'连续失败，已达到重试上限（{RETRY_LIMIT} 次）。' + preserved), generating=True)
+                    return
                 continue
+            items = trace.attach(items)
+            consecutive_failures = 0
+            repo.mutate(identifier, lambda c, d: d.update(build_retry_count=0, build_last_error=None), generating=True)
             if items:
-                repo.add(identifier, items, generating=True)
+                if replacing:
+                    staged.extend(items)
+                else:
+                    repo.add(identifier, items, generating=True)
                 existing.extend(item['input'] for item in items)
+                repo.mutate(identifier, lambda c, d: d.update(build_progress=max(0, len(existing) - baseline)), generating=True)
             repo.mutate(identifier, lambda c, d: d.update(generation_usage={
                 'requests': d.get('generation_usage', {}).get('requests', 0) + usage['requests'],
                 'output_tokens': d.get('generation_usage', {}).get('output_tokens', 0) + usage['output_tokens'],
@@ -311,13 +498,25 @@ def build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=N
             message = '模型未能生成足够的有效且不重复的问答，请检查资料、模型或提示词。已生成数据保留，可重试继续。'
             if last_error:
                 message = '模型请求或输出格式异常，未达到目标条数。已生成数据保留，请检查连接、额度和提示词后重试。'
+            if replacing:
+                message = '重新构建未完成，原有数据已保留。请检查资料和模型后重试；重试会重新生成整批数据。'
             repo.mutate(identifier, lambda c, d: d.update(status='failed', error=message), generating=True)
+        elif replacing:
+            repo.replace_generated(identifier, staged)
         else:
             repo.mutate(identifier, lambda c, d: d.update(status='ready', error=None), generating=True)
-    except HTTPException:
-        pass  # Workspace/dataset may have been deleted.
+    except GenerationStopped:
+        pass
+    except RequestLimitExceeded as error:
+        preserved = '重新构建已停止，原有数据已保留。' if replacing else '构建已停止，已生成数据保留。'
+        repo.mutate(identifier, lambda c, d: d.update(status='failed', error=str(error) + preserved, build_active_requests=0), generating=True)
+    except HTTPException as error:
+        if error.status_code != 404:
+            repo.mutate(identifier, lambda c, d: d.update(status='failed', error='构建未完成，已有数据已保留。请检查数据量与配置后重试。'), generating=True)
     except Exception:
-        repo.mutate(identifier, lambda c, d: d.update(status='failed', error='数据集构建失败，请检查数据源、模型连接与认证后重试。已生成数据仍保留。'), generating=True)
+        error = ('重新构建失败，原有数据已保留。请检查数据源和模型后重试；重试会重新生成整批数据。' if replacing else
+                 '数据集构建失败，请检查数据源、模型连接与认证后重试。已生成数据仍保留。')
+        repo.mutate(identifier, lambda c, d: d.update(status='failed', error=error), generating=True)
     finally:
         if usage['requests']:
             try:
@@ -326,5 +525,7 @@ def build_dataset(repo, identifier, chunks, dify, config, key, prompt, options=N
                     'output_tokens': d.get('generation_usage', {}).get('output_tokens', 0) + usage['output_tokens'],
                     'cost': None,
                 }), generating=True)
-            except HTTPException:
+            except (HTTPException, GenerationStopped):
                 pass
+        if scope is not None:
+            current_control.reset(scope)

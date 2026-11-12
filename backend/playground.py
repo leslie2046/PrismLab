@@ -3,6 +3,7 @@
 import base64
 import json
 import binascii
+import logging
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -12,34 +13,72 @@ import requests
 from backend.schemas import PlaygroundRequest
 from shared.audio_requests import audio_request
 
+logger = logging.getLogger(__name__)
+
 
 def llm_result(sample, content):
-    return {"ok": True, "status_code": 200, "duration_ms": sample["latency_ms"],
+    incomplete = bool(sample.get("incomplete")) or sample.get("finish_reason") == "length"
+    return {"ok": not incomplete and bool(content.strip()), "status_code": 200, "duration_ms": sample["latency_ms"],
             "data": {"content": content, "ttft_ms": sample["ttft_ms"],
                      "tpot_ms": sample.get("tpot_ms"), "output_tokens": sample.get("output_tokens"),
-                     "tokens_per_second": sample.get("tokens_per_second")},
-            "truncated": len(content) >= 100_000}
+                     "tokens_per_second": sample.get("tokens_per_second"),
+                     "no_answer": not bool(content.strip()),
+                     **({"finish_reason": sample["finish_reason"]} if sample.get("finish_reason") else {}),
+                     **({"incomplete": True, "incomplete_reason": sample.get("incomplete_reason") or
+                         ("output_limit" if sample.get("finish_reason") == "length" else "missing_end_marker")} if incomplete else {})},
+            "truncated": len(content) >= 100_000 or incomplete}
 
 
 def stream_playground(request, config, api_key, resolved=None):
-    from shared.llm_stream import iter_chat
+    from shared.llm_stream import StreamDeadlineExceeded, iter_chat
     from backend.llm_parameters import resolve_parameters
     wire, snapshot = resolved or resolve_parameters(config, request.llm_parameters, request.max_tokens, api_key)
+    started = time.perf_counter()
+    partial_content = ""
+    partial_reasoning = ""
+    partial_ttft = None
     try:
         for event in iter_chat(config["base_url"], config.get("model"), api_key,
                                request.query.strip(), request.max_tokens,
                                request.timeout_seconds, capture=True, request_parameters=wire, separate_reasoning=True,
-                               system_prompt=request.system_prompt):
+                               system_prompt=request.system_prompt, allow_partial=True):
+            if event["type"] == "delta":
+                if partial_ttft is None:
+                    partial_ttft = event.get("ttft_ms")
+                if event.get("channel") == "reasoning":
+                    partial_reasoning = (partial_reasoning + event.get("content", ""))[:100_000]
+                else:
+                    partial_content = (partial_content + event.get("content", ""))[:100_000]
             if event["type"] == "complete":
                 result = llm_result(event["sample"], event["content"])
                 result["data"].update(reasoning_content=event["reasoning_content"], parameters=snapshot,
+                                      timeout_seconds=request.timeout_seconds,
                                       metric_scope="TTFT: first output (reasoning or answer); TPOT/tokens/s: reported total output tokens")
                 result["truncated"] = result["truncated"] or len(event["reasoning_content"]) >= 100_000
                 event = {"type": "result", "result": result}
             yield json.dumps(event, ensure_ascii=False) + "\n"
-    except (ValueError, requests.RequestException):
+    except (ValueError, requests.RequestException) as exc:
+        reason = "deadline" if isinstance(exc, StreamDeadlineExceeded) else "timeout" if isinstance(exc, requests.Timeout) else "upstream_error"
+        # Only log categorical diagnostics, never exception text, prompts or keys.
+        logger.warning("Playground stream interrupted: reason=%s elapsed_ms=%d limit_seconds=%s answer_chars=%d reasoning_chars=%d",
+                       reason, (time.perf_counter() - started) * 1000, request.timeout_seconds,
+                       len(partial_content), len(partial_reasoning))
+        if partial_content or partial_reasoning:
+            # A gateway can close the connection (or report a transport error)
+            # after sending useful deltas. Preserve those deltas in Playground
+            # while marking the response as incomplete; strict benchmark paths
+            # still fail in iter_chat as before.
+            sample = {"latency_ms": (time.perf_counter() - started) * 1000,
+                      "ttft_ms": partial_ttft or 0, "incomplete": True, "incomplete_reason": reason}
+            result = llm_result(sample, partial_content)
+            result["data"].update(reasoning_content=partial_reasoning, parameters=snapshot,
+                                   timeout_seconds=request.timeout_seconds,
+                                   metric_scope="TTFT: first output (reasoning or answer); TPOT/tokens/s: reported total output tokens")
+            result["truncated"] = True
+            yield json.dumps({"type": "result", "result": result}, ensure_ascii=False) + "\n"
+            return
         # Do not send upstream URLs, headers or credentials in streaming errors.
-        yield json.dumps({"type": "error", "message": "LLM stream failed or was incomplete; check the service and retry."}) + "\n"
+        yield json.dumps({"type": "error", "message": "LLM request timed out before any output; increase the request timeout and retry." if reason in {"deadline", "timeout"} else "LLM stream failed or was incomplete; check the service and retry."}) + "\n"
 
 
 def run_playground(request: PlaygroundRequest, config: dict, api_key: str | None) -> dict:

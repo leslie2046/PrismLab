@@ -40,6 +40,12 @@ class DifyNameTests(unittest.TestCase):
         with patch('backend.dify_names.requests.get', return_value=self.response({'data': []})):
             self.assertEqual(fetch_names('https://fixture', 'dify-retrieve', 'secret')['names'], [])
 
+    def test_manual_app_name_rejects_workflow_and_preserves_chatflow(self):
+        with patch('backend.dify_names.requests.get', return_value=self.response({'name': 'Flow', 'mode': 'workflow'})), self.assertRaisesRegex(ValueError, 'Workflow'):
+            fetch_names('https://fixture', 'dify-chat', 'secret')
+        with patch('backend.dify_names.requests.get', return_value=self.response({'name': 'Chatflow', 'mode': 'advanced-chat'})):
+            self.assertEqual(fetch_names('https://fixture', 'dify-chat', 'secret')['names'], [{'id': 'app', 'name': 'Chatflow'}])
+
     def test_failures_are_actionable_without_leaking_keys(self):
         for status in [401, 403, 307, 404, 500]:
             with patch('backend.dify_names.requests.get', return_value=self.response({}, status)):

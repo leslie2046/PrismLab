@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { ChevronDown, Copy, MessageSquare, Send, SlidersHorizontal, Square, Trash2 } from "lucide-react"; import { LLM_METRICS, llmMetricKey, llmMetricLabel, llmMetricUnit, llmMetricTip } from "../llmMetrics";
+import { PageHeader } from "./PageHeader";
 import { api, streamPlayground } from "../api";
 import { DEFAULT_RERANKER_DOCUMENTS, DEFAULT_TEST_QUERIES } from "../benchmarkDefaults";
 import { tr, type Language } from "../i18n";
@@ -27,6 +28,7 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
   const [text, setText] = useState(DEFAULT_TEST_QUERIES.embedding);
   const [queries, setQueries] = useState<Record<string, string>>(DEFAULT_TEST_QUERIES);
   const [systemPrompt, setSystemPrompt] = useState("You are a helpful assistant.");
+  const [timeoutSeconds, setTimeoutSeconds] = useState(300);
   const [documents, setDocuments] = useState(() => DEFAULT_RERANKER_DOCUMENTS.map(createDocumentDraft));
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [result, setResult] = useState<PlaygroundResult | null>(null);
@@ -67,6 +69,15 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
   const output = result ? typeof result.data === "string" ? result.data : JSON.stringify(result.data, (key, value) => benchmarkId === "llm" && ["ttft_ms", "tpot_ms", "tokens_per_second"].includes(key) && typeof value === "number" ? Math.round(value) : value, 2) : "";
   const timing = result?.data && typeof result.data === "object" ? result.data as Record<string, unknown> : {};
   const answer = streamText || (typeof timing.content === "string" ? timing.content : "");
+  const responseWarning = timing.incomplete_reason === "deadline"
+    ? `${t("已达到请求总时限")}（${timing.timeout_seconds} ${t("秒")}）。${t("可增大请求超时后重试；已收到的内容已保留。")}`
+    : timing.incomplete_reason === "timeout"
+      ? t("等待上游响应超时，已收到的内容已保留。可增大请求超时后重试。")
+      : timing.incomplete_reason === "output_limit"
+        ? t("已达到模型输出长度上限，思考与答案可能共享 token 预算。可提高最大输出 token 数后重试。")
+        : timing.incomplete_reason === "upstream_error"
+          ? t("上游响应发生错误或连接中断，已收到的内容已保留。")
+          : t("上游流在结束标记前关闭，以下内容可能不完整。");
   const hasResponse = !!(result || streamText || reasoningText || error || stopped || busy);
   function clearResponse() {
     setResult(null); setStreamText(""); setReasoningText(""); setStreamTtft(null);
@@ -150,6 +161,7 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
         max_tokens: typeof parameters.max_tokens === "number" ? parameters.max_tokens : null,
         llm_parameters: benchmarkId === "llm" ? parameters : {},
         system_prompt: benchmarkId === "llm" ? systemPrompt : null,
+        ...(benchmarkId === "llm" ? { timeout_seconds: timeoutSeconds } : {}),
         documents: benchmarkId === "reranker" ? documentTexts : [],
         audio_name: benchmarkId === "audio" ? audioFile?.name : null,
         audio_base64: benchmarkId === "audio" && audioFile ? await readAudio(audioFile) : null,
@@ -174,7 +186,8 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
     }
   }
 
-  return <form className="playground-workspace" onSubmit={submit}>
+  return <div className="playground-page"><PageHeader icon={MessageSquare} title="Playground" description={t('在同一工作区配置模型、编辑提示词并调试响应。')} />
+  <form className="playground-workspace" onSubmit={submit}>
     <aside className="playground-settings" aria-label={t("请求配置")}>
       <details className="playground-settings-disclosure" open={settingsOpen} onToggle={(event) => setSettingsOpen(event.currentTarget.open)}>
       <summary className="playground-settings-heading"><SlidersHorizontal aria-hidden="true" /><h2>{t("请求配置")}</h2><ChevronDown className="playground-settings-chevron" aria-hidden="true" /></summary>
@@ -185,7 +198,8 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
         {!!models.length && <label className="field"><span className="label-with-tip">{t("模型")}<InfoTip label={t("查看说明")} text={t("选择该供应商下用于本次请求的具体模型。")}/></span><select value={model ?? ""} onChange={(event) => { setModelName(event.target.value); setCredentialId(""); setResult(null); }}>{models.map((item) => <option value={item.alias || item.name || ""} key={`${item.benchmark}-${item.alias || item.name}`}>{item.alias || item.name}</option>)}</select></label>}
         {credentials.length > 1 && <label className="field"><span className="label-with-tip">{t("凭据")}<InfoTip label={t("查看说明")} text={t("同一模型存在多个服务端点时，选择本次请求使用的凭据。")}/></span><select required value={credentialId} onChange={(event) => { setCredentialId(event.target.value); setResult(null); }}><option value="">{t("选择凭据")}</option>{credentials.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {benchmarkId === "llm" && <>
-          <label className="field"><span className="label-with-tip">{t("系统提示词")}<InfoTip label={t("查看说明")} text={t("作为 system 消息发送，定义模型角色与回答规则；留空则不发送。")}/></span><textarea rows={4} maxLength={20_000} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} placeholder={t("可选：定义模型的角色与回答规则")} /><small>{t("仅用于本次 Playground 请求，不改变测试计划或系统默认模型配置。")}</small></label>
+          <label className="field"><span className="label-with-tip">{t("请求超时（秒）")}<InfoTip label={t("查看说明")} text={t("整次生成的最长等待时间，包含思考和答案输出。默认 300 秒，最多 600 秒；可随时停止生成。")}/></span><input required type="number" min={1} max={600} step={1} value={timeoutSeconds} onChange={event => setTimeoutSeconds(Number(event.target.value))} /></label>
+          <div className="playground-prompt-section"><div className="editor-section-label">{t("提示词编排")}</div><label className="field"><span className="label-with-tip">{t("系统提示词")}<InfoTip label={t("查看说明")} text={t("作为 system 消息发送，定义模型角色与回答规则；留空则不发送。")}/></span><textarea rows={4} maxLength={20_000} value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} placeholder={t("可选：定义模型的角色与回答规则")} /><small>{t("仅用于本次 Playground 请求，不改变测试计划或系统默认模型配置。")}</small></label></div>
           <LlmParameterFields definition={definition} values={parameters} onChange={setParameters} language={language} loading={parameterLoading} error={parameterError} onRefresh={() => void loadParameters(true)} />
         </>}
         {benchmarkId === "reranker" && <DocumentListEditor documents={documents} onChange={setDocuments} language={language} />}
@@ -197,16 +211,17 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
     </aside>
     <section className={`playground-session playground-result ${benchmarkId === "llm" ? "playground-chat" : ""}`} aria-label={t("响应工作区")}>
       <header className="playground-session-toolbar"><div><strong>{model || provider?.label || benchmark?.label || "Playground"}</strong><small>{t(benchmarkId === "llm" ? "流式输出 · 单次请求，不携带对话历史" : "单次请求 · 查看真实服务响应")}</small></div><div className="playground-session-actions">
-        {result && <span className={result.ok ? "playground-ok" : "playground-error"}>HTTP {result.status_code} · {Math.round(result.duration_ms)} ms</span>}
+        {result && <span className={timing.incomplete || timing.no_answer ? "playground-warning" : result.ok ? "playground-ok" : "playground-error"}>{timing.incomplete || timing.no_answer ? t("响应未完成") : `HTTP ${result.status_code}`} · {Math.round(result.duration_ms)} ms</span>}
         {benchmarkId !== "llm" && <button type="button" className="icon-button" aria-label={t("复制回答")} title={t("复制回答")} disabled={busy || !output} onClick={() => void copyResponse()}><Copy aria-hidden="true" /></button>}
         <button type="button" className="icon-button" aria-label={t("清空结果")} title={t("清空结果")} disabled={busy || !hasResponse} onClick={clearResponse}><Trash2 aria-hidden="true" /></button>
       </div></header>
       <div className="playground-response-scroll" ref={responseRef} onScroll={(event) => { const node = event.currentTarget; followOutput.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60; }}>
       {!!sentPrompt && <div className="playground-user-message"><span>{t("本次输入")}</span><p>{sentPrompt}</p></div>}
       {benchmarkId === "llm" && (busy || result || streamText || stopped || error) ? <>
-        {busy && <p className="playground-generation-status" role="status">{t("正在生成…")}</p>}
-        {!!reasoningText && <details><summary>{t("思考过程")}</summary><pre>{reasoningText}</pre></details>}
-        <div className="playground-answer">{answer || (busy ? t("正在等待服务响应…") : "")}</div>
+        {busy && <p className="playground-generation-status" role="status">{t(reasoningText && !answer ? "模型正在思考，等待最终答案…" : "正在生成…")}</p>}
+        {!!timing.incomplete && <p className="playground-response-warning" role="status">{responseWarning}</p>}
+        {!!reasoningText && <details open><summary>{t("思考过程")}</summary><pre>{reasoningText}</pre></details>}
+        <div className="playground-answer">{answer || (busy ? t(reasoningText ? "模型正在思考，等待最终答案…" : "正在等待服务响应…") : result ? t("本次请求未收到最终答案。思考内容不代表最终回答。") : "")}</div>
         {(answer || reasoningText || result) && <footer className="playground-answer-meta" aria-label={t("回答统计")}>
           <span>{t("输出 tokens")}：{typeof timing.output_tokens === "number" ? Math.round(timing.output_tokens) : "—"}</span>
           {LLM_METRICS.map((metric) => {
@@ -218,7 +233,7 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
         {error && <div className="playground-error-box" role="alert">{error}</div>}
         {stopped && <small className="field-help">{t("已停止生成，已接收的内容已保留。")}</small>}
         {result && <details><summary>{t("原始结果")}</summary><pre>{output}</pre></details>}
-        {(result?.truncated || streamText.length >= 100_000) && <small className="field-help">{t("响应过长，仅显示前 100 KB。")}</small>}
+        {((result?.truncated && !timing.incomplete) || streamText.length >= 100_000) && <small className="field-help">{t("响应过长，仅显示前 100 KB。")}</small>}
       </> : busy ? <div className="empty-state" role="status">{t("正在等待服务响应…")}</div> : error ? <div className="playground-error-box" role="alert">{error}</div> : result ? <><pre>{output}</pre>{result.truncated && <small className="field-help">{t("响应过长，仅显示前 100 KB。")}</small>}</> : <div className="playground-welcome"><MessageSquare aria-hidden="true" /><h2>{t("开始一次测试")}</h2><p>{t("在左侧选择模型与参数，在下方输入内容并发送。")}</p></div>}
       </div>
       <div className="playground-composer">
@@ -228,5 +243,5 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
         <div className="playground-composer-actions"><span role="status">{copyNotice || t("发送请求会调用实际服务，可能产生费用。")}</span>{busy && benchmarkId === "llm" ? <button key="stop" type="button" className="ghost" onClick={stopGeneration}><Square aria-hidden="true" />{t("停止生成")}</button> : <button key="send" type="submit" className="primary" disabled={busy || !provider || (credentials.length > 1 && !credentialId) || (benchmarkId === "llm" && (!definition || parameterLoading))}><Send aria-hidden="true" />{t(busy ? "请求中…" : "发送请求")}</button>}</div>
       </div>
     </section>
-  </form>;
+  </form></div>;
 }

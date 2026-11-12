@@ -1,5 +1,6 @@
+import { PageHeader } from "./PageHeader";
 import { useEffect, useRef, useState } from "react";
-import { Check, Upload } from "lucide-react";
+import { Check, Upload, UserRound } from "lucide-react";
 import { profileApi } from "../api";
 import { useAuth, type AuthUser } from "../auth";
 import { tr, type Language } from "../i18n";
@@ -23,7 +24,7 @@ export function AccountSettings({ language }: { language: Language }) {
     finally { setBusy(false); }
   }
   const provider = user.provider === "github" ? "GitHub" : user.provider === "oidc" ? "GitLab" : t("本地账号");
-  return <section className="panel workspace-account-panel">
+  return <section className="panel workspace-account-panel"><PageHeader icon={UserRound} title={t('账户')} description={t('管理你的个人资料与登录身份')} />
     <div className="account-detail-heading"><IdentityAvatar name={user.name} src={user.avatar_url} /><div><h2>{user.name}</h2><p className="workspace-muted">{t("昵称和头像可自行修改，登录身份保持不变。")}</p></div></div>
     {error && <p className="workspace-feedback error" role="alert">{t(error)}</p>}
     {notice && <p className="workspace-feedback success" role="status"><Check aria-hidden="true" />{notice}</p>}

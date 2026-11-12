@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, field_validator, model_validator
 
 from backend.validation import is_placeholder_url
 
@@ -85,6 +85,7 @@ class ModelCredential(BaseModel):
 
 
 class ModelConfig(BaseModel):
+    enabled: bool = True
     name: str | None = Field(default=None, max_length=256)
     alias: str | None = Field(default=None, max_length=120)
     benchmark: BenchmarkKind
@@ -133,7 +134,7 @@ class PlaygroundRequest(BaseModel):
     dataset_id: str | None = Field(default=None, max_length=256)
     audio_name: str | None = Field(default=None, max_length=256)
     audio_base64: str | None = Field(default=None, max_length=10_000_000)
-    timeout_seconds: float = Field(default=30, gt=0, le=60)
+    timeout_seconds: float = Field(default=300, gt=0, le=600)
 
     @field_validator("documents")
     @classmethod
@@ -144,6 +145,8 @@ class PlaygroundRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_input(self):
+        if self.benchmark != "llm" and "timeout_seconds" not in self.model_fields_set:
+            self.timeout_seconds = 30
         if self.system_prompt and self.system_prompt.strip() and self.benchmark != "llm":
             raise ValueError("System prompt is only valid for LLM requests")
         if self.llm_parameters and self.benchmark != "llm":
@@ -162,6 +165,8 @@ class PlaygroundRequest(BaseModel):
 
 
 class ServiceConfigCreate(BaseModel):
+    enabled: bool = True
+    app_id: str | None = Field(default=None, min_length=1, max_length=256)
     dataset_id: str | None = Field(default=None, min_length=1, max_length=256)
     name: str = Field(min_length=1, max_length=120)
     benchmark: BenchmarkKind | None = None
@@ -201,6 +206,14 @@ class ServiceConfigCreate(BaseModel):
         if value and is_placeholder_url(value):
             raise ValueError("base_url must be a concrete HTTP(S) endpoint, not a placeholder")
         return value
+
+
+class ActivationUpdate(BaseModel):
+    enabled: StrictBool
+
+
+class ModelActivationUpdate(ActivationUpdate):
+    model: str = Field(min_length=1, max_length=256)
 
 
 class ProviderAccess(BaseModel):

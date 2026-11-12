@@ -256,6 +256,9 @@ pnpm run test:documents
 
 ### Documentation
 
+- [Product roadmap: quality evaluation and RAG datasets (Chinese)](ROADMAP.md)
+- [M0 评测基础与快照 / Evaluation foundations](docs/evaluation-foundations.md)
+- [PrismLab, RAGAS and DeepEval comparison (Chinese)](docs/prismlab-ragas-deepeval-comparison.md)
 - [Docker deployment and packaging scripts](docker/README.md)
 - [PostgreSQL setup, backups, and SQLite migration](docs/postgresql.md)
 - [Sign-in, GitHub OAuth, and GitLab / OIDC](docs/authentication.md)
@@ -271,3 +274,9 @@ pnpm run test:documents
 ## License
 
 [MIT](LICENSE)
+
+Quality evaluation now supports official DeepEval/RAGAS scoring, immutable dataset releases, human review, evaluation comparisons and durable workers. See [quality evaluation guide](docs/quality-evaluations.md) and [roadmap](ROADMAP.md).
+
+### Provider and model availability
+
+Compact switches on the provider list control each provider and model independently. Disabled entries are excluded from model selectors and rejected when new requests resolve their configuration. Disabling a provider preserves each model's own enabled state and all saved credentials. Re-enabling restores those states. Existing records default to enabled; workspace owners and administrators can change the switches. Submitted tasks are not forcibly terminated.

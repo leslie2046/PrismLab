@@ -30,7 +30,7 @@ export function WorkspaceSelection({ user, workspaces, onSelect, onLogout, onRef
   return <div className="login-page workspace-selection">
     <header className="login-header"><div className="login-brand"><BrandLogo /><strong>PrismLab</strong></div><button type="button" className="ghost" disabled={busy} onClick={() => void perform(onLogout)}><LogOut aria-hidden="true" />{t("退出登录")}</button></header>
     <main className="login-body"><section className="workspace-selection-panel" aria-labelledby="workspace-selection-title">
-      <header className="workspace-selection-heading"><h1 id="workspace-selection-title">{t("选择空间")}</h1><p>{user.name} · {t("请选择进入个人空间或团队空间。")}</p></header>
+      <header className="workspace-selection-heading"><span className="workspace-selector-icon"><Users aria-hidden="true" /></span><h1 id="workspace-selection-title">{t("选择空间")}</h1><p>{user.name} · {t("请选择进入个人空间或团队空间。")}</p></header>
       {error && <p className="workspace-feedback error" role="alert">{error}</p>}
       {(["personal", "team"] as const).map(kind => <section className="workspace-selection-group" key={kind} aria-label={t(kind === "personal" ? "个人空间" : "团队空间")}>
         <h2>{t(kind === "personal" ? "个人空间" : "团队空间")}</h2>

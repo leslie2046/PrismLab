@@ -127,6 +127,77 @@ class DatasetApiTests(unittest.TestCase):
             self.assertEqual(self.client.put('/api/dataset-settings', json={'default_llm': self.selection}).status_code, 400)
         self.assertEqual(self.client.put('/api/dataset-settings', json={'prompt': '   '}).status_code, 422)
 
+    def test_default_critic_settings_validation_preservation_and_reset(self):
+        critic = {'id': 'review-provider', 'model': 'review-model'}
+        self.assertIsNone(self.client.get('/api/dataset-settings').json()['default_critic_llm'])
+        self.resolve.return_value = ({**self.config, 'model': 'review-model'}, 'review-key')
+        response = self.client.put('/api/dataset-settings', json={
+            'default_llm': self.selection, 'default_critic_llm': critic, 'prompt': 'Custom'})
+        self.resolve.return_value = (self.config, 'private-key')
+        self.assertEqual(response.status_code, 200)
+        saved_critic = response.json()['default_critic_llm']
+        self.assertEqual(saved_critic['id'], 'review-provider')
+        self.assertEqual(saved_critic['model'], 'review-model')
+        self.assertEqual(self.client.get('/api/dataset-settings').json()['default_critic_llm'], saved_critic)
+        # Older clients omit the new field; saving must preserve the critic setting.
+        response = self.client.put('/api/dataset-settings', json={'default_llm': self.selection, 'prompt': 'Updated'})
+        self.assertEqual(response.json()['default_critic_llm'], saved_critic)
+        before = self.store.system_settings()
+        self.resolve.side_effect = HTTPException(400, 'Invalid model')
+        response = self.client.put('/api/dataset-settings', json={'default_critic_llm': critic})
+        self.resolve.side_effect = None
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.store.system_settings(), before)
+        response = self.client.put('/api/dataset-settings', json={'default_llm': self.selection, 'default_critic_llm': None})
+        self.assertIsNone(response.json()['default_critic_llm'])
+        self.assertIsNone(self.store.system_settings()['dataset_default_critic_llm'])
+
+    def test_generation_inherits_or_overrides_critic_and_retry_keeps_snapshot(self):
+        default_critic = {'id': 'review-provider', 'model': 'review-model'}
+        self.store.save_system_settings({'dataset_default_llm': self.selection,
+                                         'dataset_default_critic_llm': default_critic})
+
+        def resolve(request):
+            return {**self.config, 'id': request.provider_id, 'model': request.model}, request.provider_id + '-key'
+
+        self.resolve.side_effect = resolve
+        for override in [None, {'id': 'override', 'model': 'override-model'}, self.selection]:
+            with self.subTest(override=override), patch('backend.dataset_routes.build_dataset') as build:
+                response = self.client.post('/api/datasets/generate', data={
+                    'name': 'Critic snapshot', 'options': json.dumps({'size': 1, 'critic_llm': override})},
+                    files={'files': ('source.txt', b'Grounded source')})
+                self.assertEqual(response.status_code, 202)
+                dataset = self.repo.get(response.json()['id'])
+                expected = override or default_critic
+                snapshot = dataset['generation_options']['critic_llm']
+                self.assertEqual(snapshot['id'], expected['id'])
+                self.assertEqual(snapshot['model'], expected['model'])
+                self.assertEqual(build.call_args.args[8][0]['model'], expected['model'])
+                self.assertEqual(build.call_args.args[8][1], expected['id'] + '-key')
+                self.repo.mutate(dataset['id'], lambda c, d: d.update(status='failed'), generating=True)
+                self.store.save_system_settings({'dataset_default_critic_llm': {'id': 'new', 'model': 'new-model'}})
+                self.assertEqual(self.client.post('/api/datasets/' + dataset['id'] + '/retry').status_code, 202)
+                self.assertEqual(build.call_args.args[8][0]['model'], expected['model'])
+                self.assertEqual(self.repo.get(dataset['id'])['generation_options']['critic_llm'], snapshot)
+                self.store.save_system_settings({'dataset_default_critic_llm': default_critic})
+
+        self.store.save_system_settings({'dataset_default_critic_llm': None})
+        with patch('backend.dataset_routes.build_dataset') as build:
+            response = self.generate(size=1)
+        self.assertEqual(response.status_code, 202)
+        self.assertIsNone(build.call_args.args[8])
+        self.assertIsNone(response.json()['generation_options']['critic_llm'])
+
+    def test_invalid_default_critic_does_not_create_dataset(self):
+        self.store.save_system_settings({'dataset_default_critic_llm': {'id': 'missing', 'model': 'missing'}})
+        def resolve(request):
+            if request.provider_id == 'missing':
+                raise HTTPException(400, 'Invalid critic')
+            return self.config, 'private-key'
+        with patch.object(self.resolve, 'side_effect', resolve):
+            self.assertEqual(self.generate().status_code, 400)
+        self.assertEqual(self.repo.page(1, 10, '')['total'], 0)
+
     def test_crud_search_pagination_export_and_import_roundtrip(self):
         identifier = self.create()
         path = '/api/datasets/' + identifier

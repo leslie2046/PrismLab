@@ -11,7 +11,7 @@ os.environ['DEEPEVAL_DISABLE_LEGACY_KEYFILE'] = '1'
 from deepeval.dataset import Golden
 from pydantic import ConfigDict, model_validator
 
-APP_FIELDS = {'id', 'dataset_id', 'created_at', 'updated_at', 'status'}
+APP_FIELDS = {'id', 'dataset_id', 'created_at', 'updated_at', 'status', 'origin', 'generation_trace_id', 'generation_record_id'}
 ALIASES = {field.serialization_alias: name for name, field in Golden.model_fields.items()
            if field.serialization_alias}
 ALIASES.update({'imagesMapping': 'images_mapping', 'reference_contexts': 'context',

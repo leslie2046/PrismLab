@@ -30,6 +30,8 @@ def fetch_names(server_url, benchmark, api_key, page=1, dataset_id=None):
         raise ValueError('Dify 未返回有效 JSON，请检查服务地址。') from exc
     if not isinstance(body, dict):
         raise ValueError('Dify 名称响应格式不正确。')
+    if benchmark == 'dify-chat' and body.get('mode') == 'workflow':
+        raise ValueError('Workflow 类型应用不支持聊天测试，不能添加。')
     entries = [body] if benchmark == 'dify-chat' or dataset_id else body.get('data')
     if not isinstance(entries, list):
         raise ValueError('Dify 未返回知识库列表。')

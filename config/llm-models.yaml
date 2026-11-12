@@ -51,7 +51,7 @@ profiles:
       thinking_mode: {type: enum, label: 思考模式, description: 需要 Xinference 1.17 或更新版本以及支持混合思考的模型。, values: [enabled, disabled], api_field: enable_thinking, wire_values: {enabled: true, disabled: false}}
 models:
   - {provider: deepseek, patterns: [deepseek-flash, deepseek-v4-pro, deepseek-v4-flash], profile: deepseek}
-  - {provider: siliconflow, patterns: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen/Qwen3-30B-A3B', 'Qwen/Qwen3-235B-A22B', 'Pro/Qwen/Qwen3-8B', 'Pro/Qwen/Qwen3-14B', 'Pro/Qwen/Qwen3-32B', 'Pro/deepseek-ai/DeepSeek-V3.2', 'deepseek-ai/DeepSeek-V3.2'], profile: siliconflow_thinking}
+  - {provider: siliconflow, patterns: ['Qwen/Qwen3.5-27B', 'Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen/Qwen3-30B-A3B', 'Qwen/Qwen3-235B-A22B', 'Pro/Qwen/Qwen3-8B', 'Pro/Qwen/Qwen3-14B', 'Pro/Qwen/Qwen3-32B', 'Pro/deepseek-ai/DeepSeek-V3.2', 'deepseek-ai/DeepSeek-V3.2'], profile: siliconflow_thinking}
   - {provider: siliconflow, patterns: ['Pro/deepseek-ai/DeepSeek-V4', 'deepseek-ai/DeepSeek-V4-Flash', 'Pro/zai-org/GLM-5.2'], profile: siliconflow_effort}
   - {provider: vllm, patterns: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'], profile: qwen_template}
   - {provider: aliyun, patterns: [qwen3-8b, qwen3-14b, qwen3-32b, qwen3-30b-a3b, qwen3-235b-a22b], profile: aliyun_thinking}

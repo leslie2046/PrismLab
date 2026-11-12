@@ -58,6 +58,7 @@ services:
       - api
     ports:
       - "8080:80"
+      - "8441:80"
 
 volumes:
   postgres_data:

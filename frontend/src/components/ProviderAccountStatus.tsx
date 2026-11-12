@@ -8,8 +8,9 @@ const balanceProviders = new Set(["deepseek", "moonshot", "siliconflow"]);
 
 export function ProviderAccountStatus({ providerId, records, language, configurationState }: { providerId: string; records: ServiceConfig[]; language: Language; configurationState: "loading" | "ready" | "error" }) {
   const t = (value: string) => tr(language, value);
-  const source = records.flatMap(config => config.models.flatMap(model => (model.credentials || []).filter(credential => credential.has_api_key && credential.id && credential.server_url).map(credential => ({ config, credentialId: credential.id!, name: credential.name })))).at(0)
-    || records.filter(config => config.has_api_key && config.base_url).map(config => ({ config, credentialId: "legacy", name: config.name })).at(0);
+  const activeRecords = records.filter(config => config.enabled !== false);
+  const source = activeRecords.flatMap(config => config.models.flatMap(model => (model.credentials || []).filter(credential => credential.has_api_key && credential.id && credential.server_url).map(credential => ({ config, credentialId: credential.id!, name: credential.name })))).at(0)
+    || activeRecords.filter(config => config.has_api_key && config.base_url).map(config => ({ config, credentialId: "legacy", name: config.name })).at(0);
   const config = source?.config;
   const credentialId = source?.credentialId;
   const configured = Boolean(source || (["xinference", "vllm"].includes(providerId) && records.some(record => record.endpoint_configured)));
@@ -31,6 +32,7 @@ export function ProviderAccountStatus({ providerId, records, language, configura
     return () => controller.abort();
   }, [config, credentialId, supported, revision, configurationState]);
   if (configurationState !== "ready") return <div className="provider-account-status" role="status"><span className="provider-config-state">{t(configurationState === "loading" ? "配置加载中…" : "配置加载失败")}</span></div>;
+  if (records.length > 0 && activeRecords.length === 0) return <div className="provider-account-status" role="status"><span className="provider-config-state"><span aria-hidden="true" />{t("已关闭")}</span></div>;
   const detail = configured && supported && result?.status === "available" && result.balances.length > 0
     ? `${t("余额")} ${result.balances.map(balance => `${balance.currency || t("币种未知")} ${balance.amount}`).join(" / ")}`
     : "";

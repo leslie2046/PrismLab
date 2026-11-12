@@ -11,3 +11,5 @@ createRoot(document.getElementById("root")!).render(
     <AuthGate><App /></AuthGate>
   </StrictMode>,
 );
+
+import "./design-system.css";

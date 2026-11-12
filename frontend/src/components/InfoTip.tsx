@@ -1,8 +1,9 @@
 import { useId, useState } from "react";
 import { Info } from "lucide-react";
 
-export function InfoTip({ text, label = "More information" }: { text: string; label?: string }) {
-  const id = useId();
+export function InfoTip({ text, label = "More information", id: tooltipId }: { text: string; label?: string; id?: string }) {
+  const generatedId = useId();
+  const id = tooltipId ?? generatedId;
   const [position, setPosition] = useState({ left: 0, top: 0 });
   function place(target: HTMLElement) {
     const anchor = target.getBoundingClientRect();
@@ -12,7 +13,7 @@ export function InfoTip({ text, label = "More information" }: { text: string; la
     setPosition({ left: Math.max(8, Math.min(anchor.left - 8, window.innerWidth - width - 8)),
       top: anchor.bottom + height + 7 < window.innerHeight ? anchor.bottom + 7 : Math.max(8, anchor.top - height - 7) });
   }
-  return <span className="info-tip" tabIndex={0} aria-label={label} aria-describedby={id} onMouseEnter={(event) => place(event.currentTarget)} onFocus={(event) => place(event.currentTarget)}>
+  return <span className="info-tip" tabIndex={0} aria-label={label} aria-describedby={id} onMouseEnter={(event) => place(event.currentTarget)} onFocus={(event) => place(event.currentTarget)} onClick={(event) => { event.preventDefault(); event.currentTarget.focus(); }}>
     <Info aria-hidden="true" />
     <span className="info-tip-content" style={position} id={id} role="tooltip">{text}</span>
   </span>;

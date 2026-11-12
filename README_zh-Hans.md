@@ -125,7 +125,7 @@ GitHub 使用 **OAuth 2.0**，GitLab 使用通用 **OIDC** 接口。所配置身
 
 ## 完成第一次测试
 
-1. **模型供应商**：选择内置供应商，添加模型并配置服务地址和凭据，或在支持的供应商中获取并选择模型，然后保存。
+1. **模型供应商**：选择内置供应商，添加模型并配置服务地址和凭据，或在支持的供应商中获取并选择模型，然后保存。供应商与模型右侧的小开关分别控制启停：关闭后不再供新任务选择或调用，配置和密钥会保留；供应商重新开启时，各模型恢复各自原来的启用状态。仅空间所有者和管理员可修改。
 2. **Playground**：选择测试类型和已配置的模型，发送一次请求检查配置。它会调用真实服务，但不会创建测试计划或运行记录。
 3. **测试计划**：填写测试输入，选择模型、并发档位和请求数。建议从并发 1、请求数 5 开始。新建计划保存后不会立即运行，由你决定何时启动。
 4. **运行记录**：查看进度、失败情况和测试结果。每次执行都会产生一条独立记录。
@@ -159,7 +159,7 @@ YAML 配置、参数校验及当前限制见 [LLM 模型定义与请求参数](d
 
 ## RAG 评测数据集
 
-「数据集」直接使用 DeepEval SDK 构建单轮 Golden，支持 CSV / JSON / JSONL 导入导出、文档和 Dify 分段生成、种子扩写及按任务生成。可配置质量评审、问题演化和输出风格，无需另部署 DeepEval 服务。可指定条数、模型，并在空间设置中配置默认模型与可重置的构建提示词。支持样本编辑、归档、追加导入与导出；生成失败保留已有结果并支持续建。详见 [RAG 数据集说明](docs/rag-datasets.md)。
+「评测数据集」直接使用 DeepEval SDK 构建单轮 Golden，支持 CSV / JSON / JSONL 导入导出、文档和 Dify 分段生成、种子扩写及按任务生成。可配置质量评审、问题演化和输出风格，无需另部署 DeepEval 服务。可指定条数、模型，并在空间设置中配置默认模型与可重置的构建提示词。支持样本编辑、归档、追加导入与导出；生成失败保留已有结果并支持续建。详见 [RAG 评测数据集说明](docs/rag-datasets.md)。
 
 ## 命令行测试
 
@@ -256,6 +256,9 @@ pnpm run test:documents
 
 ### 相关文档
 
+- [产品路线图：质量评测与 RAG 数据集](ROADMAP.md)
+- [M0 评测基础与快照 / Evaluation foundations](docs/evaluation-foundations.md)
+- [PrismLab、RAGAS 与 DeepEval 能力对比](docs/prismlab-ragas-deepeval-comparison.md)
 - [Docker 部署与打包启动脚本](docker/README.md)
 - [PostgreSQL 配置、备份与 SQLite 迁移](docs/postgresql.md)
 - [登录、GitHub OAuth 与 GitLab / OIDC](docs/authentication.md)
@@ -271,3 +274,5 @@ pnpm run test:documents
 ## 许可证
 
 [MIT](LICENSE)
+
+质量评测支持 DeepEval/RAGAS 官方评分、不可变数据版本、人工审核、评测对比和持久 worker。详见[质量评测说明](docs/quality-evaluations.md)及[路线图](ROADMAP.md)。

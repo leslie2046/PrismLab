@@ -98,6 +98,29 @@ class WorkspaceTests(unittest.TestCase):
         store.begin_ai_report("abcdef123456", "generation", {"model": "model"})
         store.finish_ai_report("abcdef123456", "generation", name + " report")
 
+    def test_activation_requires_management_and_stays_inside_workspace(self):
+        team = self.create_team()
+        self.join(team)
+        self.owner.headers["X-Workspace-Id"] = team
+        team_store = self.manager.runtime(team).store
+        self.put_fixtures(team_store, "Team")
+        personal_store = self.manager.runtime(self.owner_status["personal_workspace_id"]).store
+        self.put_fixtures(personal_store, "Personal")
+        original = personal_store.get_service_config("config")
+        for endpoint, payload in [
+            ("/api/provider-models/vllm/enabled", {"enabled": False}),
+            ("/api/service-configs/config/models/enabled", {"model": "embedding-model", "enabled": False}),
+        ]:
+            self.assertEqual(self.member.patch(endpoint, json=payload).status_code, 403)
+            self.assertEqual(self.outsider.patch(endpoint, headers={"X-Workspace-Id":team}, json=payload).status_code, 403)
+            response = self.owner.patch(endpoint, json=payload)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(personal_store.get_service_config("config"), original)
+        self.assertFalse(team_store.get_service_config("config")["enabled"])
+        self.assertFalse(team_store.get_service_config("config")["models"][0]["enabled"])
+        self.assertEqual(self.member.get("/api/catalog").json()["benchmarks"][0]["providers"], [])
+        self.assertEqual(len(self.member.get("/api/service-configs").json()), 1)
+
     def test_personal_spaces_are_private_and_legacy_belongs_only_to_local_admin(self):
         self.put_fixtures(self.root, "legacy")
         admin, admin_status = self.client("local", "admin", "admin")
@@ -288,7 +311,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.member.get("/api/service-configs").json()[0]["api_key_masked"], "••••••••")
         for method, path, payload in (("put", "/api/system-settings", {"default_llm": None}),
                                      ("post", "/api/service-configs", {}), ("post", "/api/provider-models/list", {}),
-                                     ("post", "/api/dify/names", {}), ("delete", "/api/runs/abcdef123456", None),
+                                     ("post", "/api/dify/names", {}),
+                                     ("delete", "/api/runs/abcdef123456", None),
                                      ("delete", "/api/plans/plan", None)):
             self.assertEqual(self.member.request(method, path, json=payload).status_code, 403)
         self.assertEqual(self.member.patch(f"/api/workspaces/{team}/members/{member_id}", json={"role": "admin"}).status_code, 403)
@@ -430,6 +454,7 @@ class WorkspaceTests(unittest.TestCase):
             ("put", "/api/system-settings", {"default_llm": None}),
             ("post", "/api/provider-models/verify", {}),
             ("post", "/api/provider-models/list", {}),
+            ("post", "/api/dify/names", {}),
         ):
             with self.subTest(method=method, path=path):
                 self.assertEqual(self.member.request(method, path, json=payload).status_code, 403)
@@ -507,6 +532,58 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(self.outsider.get(endpoint, headers={"X-Workspace-Id": team}).status_code, 403)
             self.assertEqual(fetch.call_count, 2)
 
+    def test_evaluation_evidence_and_workers_are_workspace_scoped(self):
+        from backend.dataset_routes import install_dataset_routes
+        from backend.evaluation_routes import install_evaluation_routes
+        from backend.evaluation_store import EvaluationStore
+        from unittest.mock import MagicMock
+        install_dataset_routes(self.app, web_main.store, web_main._playground_access, web_main._dataset_concrete_store)
+        resolve = MagicMock(return_value=({'provider': 'vllm', 'model': 'qa-model', 'base_url': 'https://fixture.test'}, 'private-key'))
+        install_evaluation_routes(self.app, web_main.store, resolve, web_main._dataset_concrete_store)
+        team = self.create_team()
+        self.join(team)
+        self.owner.headers['X-Workspace-Id'] = team
+        dataset = self.owner.post('/api/datasets', json={'name': 'Frozen evaluation'}).json()
+        self.member.post('/api/datasets/' + dataset['id'] + '/items', json={'input': 'q', 'expected_output': 'a'})
+        request = {'dataset_id': dataset['id'], 'target': {'benchmark': 'llm', 'selection': {'id': 'qa', 'model': 'qa-model'}},
+                   'judge': {'id': 'qa', 'model': 'qa-model'}, 'metrics': [{'id': 'deepeval.answer_relevancy'}],
+                   'idempotency_key': 'shared-key'}
+        response = self.member.post('/api/evaluation-runs', json=request)
+        self.assertEqual(response.status_code, 201, response.text)
+        run = response.json()
+        self.assertEqual(self.owner.get('/api/evaluation-runs/' + run['id']).status_code, 200)
+        version_path = '/api/dataset-versions/' + run['evidence']['dataset_version_id']
+        for method, path in [('get', '/api/evaluation-runs/' + run['id']), ('get', version_path),
+                             ('post', '/api/evaluation-runs/' + run['id'] + '/cancel'),
+                             ('post', '/api/evaluation-runs/' + run['id'] + '/retry-failed'),
+                             ('delete', '/api/evaluation-runs/' + run['id'])]:
+            self.assertEqual(getattr(self.outsider, method)(path).status_code, 404)
+            self.assertEqual(getattr(self.outsider, method)(path, headers={'X-Workspace-Id': team}).status_code, 403)
+        self.assertEqual(self.outsider.get('/api/evaluation-runs').json()['items'], [])
+        self.assertEqual(self.outsider.post('/api/evaluation-runs', json=request).status_code, 404)
+        self.assertEqual(self.member.put('/api/dataset-settings', json={'scoring_engine': 'ragas', 'judge_prompt': 'Member judge'}).status_code, 403)
+        self.assertEqual(self.owner.put('/api/dataset-settings', json={'scoring_engine': 'ragas', 'judge_prompt': 'Team judge'}).status_code, 200)
+        self.assertEqual(self.member.get('/api/dataset-settings').json()['judge_prompt'], 'Team judge')
+        self.assertNotEqual(self.outsider.get('/api/dataset-settings').json()['judge_prompt'], 'Team judge')
+        # Concrete store captured in the request is safe after ContextVar reset.
+        worker = EvaluationStore(self.manager.runtime(team).store)
+        token = worker.start(run['id'])
+        outsider_worker = EvaluationStore(self.manager.runtime(self.outsider_status['personal_workspace_id']).store)
+        with self.assertRaises(Exception) as error:
+            outsider_worker.record_target(run['id'], run['cases'][0]['id'], token, observation={'actual_output': 'a'})
+        self.assertEqual(error.exception.status_code, 404)
+        worker.record_target(run['id'], run['cases'][0]['id'], token, observation={'actual_output': 'a'})
+        self.assertEqual(self.member.get('/api/evaluation-runs/' + run['id']).json()['cases'][0]['status'], 'completed')
+        self.assertNotIn('worker_token', self.member.get('/api/evaluation-runs').text)
+        path = '/api/evaluation-runs/' + run['id']
+        self.assertEqual(self.member.delete(path).status_code, 403)
+        self.assertEqual(self.owner.delete(path).status_code, 409)
+        self.owner.post(path + '/cancel')
+        self.assertEqual(self.owner.delete(path).status_code, 200)
+        self.assertEqual(self.owner.get(version_path).status_code, 200)
+        self.assertEqual(self.owner.get('/api/datasets/' + dataset['id']).status_code, 200)
+
+
     def test_rag_datasets_are_workspace_scoped_and_settings_require_admin(self):
         # Recent FastAPI versions retain included routers as nested route groups;
         # the legacy test harness above copies only routes with a direct path.
@@ -525,10 +602,54 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.outsider.get(path).status_code, 404)
         self.assertEqual(self.outsider.get(path, headers={'X-Workspace-Id': team}).status_code, 403)
         self.assertEqual(self.owner.get(path, headers={'X-Workspace-Id': self.owner_status['personal_workspace_id']}).status_code, 404)
-        response = self.member.put('/api/dataset-settings', json={'prompt': 'Member prompt'})
+        self.assertEqual(self.member.put(path + '/generation-config', json={'size': 2}).status_code, 200)
+        self.assertEqual(self.member.post(path + '/documents', files={'files': ('source.txt', b'Team source')}).status_code, 200)
+        self.assertEqual(self.owner.get(path + '/sources').json()['items'][0]['name'], 'source.txt')
+        self.assertEqual(self.outsider.get(path + '/sources').status_code, 404)
+        self.assertEqual(self.outsider.put(path + '/generation-config', json={'size': 2}).status_code, 404)
+        self.assertEqual(self.outsider.post(path + '/documents', files={'files': ('source.txt', b'Other source')}).status_code, 404)
+        self.assertEqual(self.outsider.post(path + '/sync-dify', data={'config_id': 'missing'}).status_code, 404)
+        self.assertEqual(self.outsider.post(path + '/build').status_code, 404)
+        response = self.member.put('/api/dataset-settings', json={'prompt': 'Member prompt', 'critic_prompt': 'Member review'})
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.owner.put('/api/dataset-settings', json={'prompt': 'Team prompt'}).status_code, 200)
+        self.assertEqual(self.owner.put('/api/dataset-settings', json={'prompt': 'Team prompt', 'critic_prompt': 'Team review'}).status_code, 200)
         self.assertEqual(self.member.get('/api/dataset-settings').json()['prompt'], 'Team prompt')
         self.assertNotEqual(self.outsider.get('/api/dataset-settings').json()['prompt'], 'Team prompt')
+        self.assertEqual(self.member.get('/api/dataset-settings').json()['critic_prompt'], 'Team review')
+        self.assertNotEqual(self.outsider.get('/api/dataset-settings').json()['critic_prompt'], 'Team review')
+        self.assertNotEqual(self.owner.get('/api/dataset-settings', headers={'X-Workspace-Id': self.owner_status['personal_workspace_id']}).json()['critic_prompt'], 'Team review')
         self.assertEqual(self.owner.put('/api/system-settings', json={'default_llm': None}).status_code, 200)
         self.assertEqual(self.member.get('/api/dataset-settings').json()['prompt'], 'Team prompt')
+
+    def test_removed_evaluation_tokens_cannot_authenticate_or_bypass_csrf(self):
+        from backend.evaluation_routes import install_evaluation_routes
+        install_evaluation_routes(self.app, web_main.store, web_main._playground_access, web_main._dataset_concrete_store)
+        paths = web_main.app.openapi()['paths']
+        self.assertFalse(any(path.startswith(('/api/evaluation-connectors', '/api/evaluation-tokens')) or path.endswith('/gate') for path in paths))
+        team = self.create_team()
+        self.owner.headers['X-Workspace-Id'] = team
+        legacy_header = 'Bearer pl_eval_' + 'a' * 32 + '.retired-secret'
+        client = TestClient(self.app, follow_redirects=False)
+        self.addCleanup(client.close)
+        client.headers.update({'Authorization': legacy_header, 'X-Workspace-Id': team})
+        self.assertEqual(client.get('/api/evaluation-runs').status_code, 401)
+        self.assertEqual(client.post('/api/evaluation-runs/missing/cancel').status_code, 401)
+        self.assertEqual(self.owner.get('/api/evaluation-runs', headers={'Authorization': legacy_header}).status_code, 200)
+        self.assertEqual(self.owner.post('/api/evaluation-runs/missing/cancel', headers={
+            'Authorization': legacy_header, 'X-CSRF-Token': 'invalid',
+        }).status_code, 403)
+        self.assertEqual(self.owner.get('/api/evaluation-runs/missing/gate').status_code, 404)
+        for resource in ('evaluation-connectors', 'evaluation-tokens'):
+            for method, suffix in (('GET', ''), ('POST', ''), ('DELETE', '/old-id')):
+                with self.subTest(resource=resource, method=method):
+                    response = self.owner.request(method, '/api/' + resource + suffix, json={'name': 'Retired'})
+                    self.assertEqual(response.status_code, 404, response.text)
+
+    def test_evaluation_cache_does_not_cross_workspace_schemas(self):
+        from backend.evaluation_store import EvaluationStore
+        first=EvaluationStore(self.manager.runtime(self.owner_status['personal_workspace_id']).store)
+        second=EvaluationStore(self.manager.runtime(self.member_status['personal_workspace_id']).store)
+        first.cache_put('same-input',{'score':.9,'reason':'owner result'})
+        self.assertIsNone(second.cache_get('same-input'))
+        second.cache_put('same-input',{'score':.1,'reason':'member result'})
+        self.assertEqual(first.cache_get('same-input')['score'],.9)
