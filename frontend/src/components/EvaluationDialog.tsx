@@ -100,7 +100,8 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
   const effective = (chosen ?? recommended).filter(id => available.some(m => m.id === id));
   const needsJudge = effective.some(id => metrics.find(m => m.id === id)?.engine !== 'rules');
   const limit = scope === 'all' ? null : Number(scope === 'custom' ? customLimit : scope);
-  const validReranker = reranker ? rerankers.some(option => option.value === reranker) : knowledgeTargets.length <= 1;
+  const multiRoute = evaluationType === 'retrieval' && knowledgeTargets.length > 1;
+  const validReranker = !multiRoute || (!!reranker && rerankers.some(option => option.value === reranker));
   const validTarget = evaluationType === 'retrieval'
     ? knowledgeTargets.length > 0 && knowledgeTargets.every(value => targets.some(option => option.value === value)) && validReranker
     : targets.some(option => option.value === target);
@@ -141,7 +142,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
           name:name.trim() || `${datasets.find(item => item.id === dataset)?.name || t('数据集')} · ${t(evaluationTypeLabels[evaluationType])}`.slice(0,120),
           idempotency_key:key.current, template, sample_limit:limit,
           target:{benchmark,selection:JSON.parse(evaluationType==='retrieval'?knowledgeTargets[0]:target) as LlmSelection,prompt:evaluationType==='retrieval'?'':prompt,max_tokens:1024,retrieval_top_k:topK,
-            ...(evaluationType==='retrieval'?{selections:knowledgeTargets.map(value=>JSON.parse(value) as LlmSelection),
+            ...(multiRoute?{selections:knowledgeTargets.map(value=>JSON.parse(value) as LlmSelection),
               retrieval_reranker:reranker?JSON.parse(reranker):null,retrieval_candidate_top_k:candidateK,retrieval_score_threshold:scoreThreshold}:{})},
           scoring_engine:engine, judge:needsJudge && judge ? JSON.parse(judge) : null,
           metrics:effective.map(id => ({id, ...(['rules.recall_at_k','rules.mrr','rules.ndcg'].includes(id)?{k:topK}:{}), threshold:thresholds[id] ?? metrics.find(m => m.id === id)?.threshold.default ?? .5,
@@ -201,16 +202,18 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             {loaded && !targets.length && <p className="evaluation-guidance" role="status">{t('没有可用的被测对象，请先在服务配置中添加模型或 Dify 配置。')}</p>}
             {evaluationType==='retrieval' && <>
               {!!knowledgeTargets.length && <ul className="evaluation-selected-targets">{knowledgeTargets.map(value=><li key={value}><span>{targets.find(option=>option.value===value)?.label || t('知识库配置不可用')}</span><button type="button" className="icon-button" disabled={busy} aria-label={`${t('移除来源')} ${targets.find(option=>option.value===value)?.label || ''}`} onClick={()=>setKnowledgeTargets(current=>current.filter(item=>item!==value))}><X aria-hidden="true"/></button></li>)}</ul>}
-              <h4 className="label-with-tip">{t('多路召回策略')}<InfoTip label={t('多路召回策略说明')} text={t('各知识库分别召回候选片段，合并去重后统一重排，再按分数阈值筛选并保留最终 Top K。任一路失败时不会使用部分结果评分。')}/></h4>
-              <div className="field"><span className="label-with-tip">{t('重排模型（Reranker）')}<InfoTip label={t('重排模型说明')} text={t('默认使用空间设置中的重排模型，可为本次评测单独更换。多选知识库时必须选择重排模型；单库未选择时使用知识库的召回分数。')}/></span>
-                <SearchableSelect label={t('重排模型（Reranker）')} language={language} value={reranker} disabled={busy || !loaded} options={[{value:'',label:t('未选择重排模型')},...rerankers]} onChange={setReranker}/>
-                {!validReranker && <small className="error-text" role="alert">{t(reranker?'原重排模型已失效，请重新选择':'多路召回需要选择重排模型，或在空间设置中配置默认重排模型')}</small>}
-              </div>
-              <div className="evaluation-evidence-grid">
-                <label className="field"><span className="label-with-tip">{t('每库召回数量')}<InfoTip label={t('每库召回数量说明')} text={t('每个知识库提供的候选片段上限，范围 1–100，不能小于最终 Top K。候选片段越多，重排请求越大。')}/></span><input aria-label={t('每库召回数量')} type="number" required min={topK} max={100} value={candidateK} onChange={event=>setCandidateK(Number(event.target.value))}/></label>
-                <label className="field"><span className="label-with-tip">{t('最终 Top K')}<InfoTip label={t('最终 Top K 说明')} text={t('合并重排和阈值筛选后最多保留的结果数量，也用于 Recall@K、MRR 和 nDCG 的计算。')}/></span><input aria-label={t('最终 Top K')} type="number" required min={1} max={100} value={topK} onChange={event=>{const next=Number(event.target.value);setTopK(next);setCandidateK(current=>Math.max(current,next));}}/></label>
-                <label className="field"><span className="label-with-tip">{t('分数阈值（Score threshold）')}<InfoTip label={t('分数阈值说明')} text={t('范围 0–1，仅保留分数不低于阈值的结果。选择重排模型时使用重排分数；单库未重排时使用原召回分数。筛选后可能少于 Top K 或没有结果。')}/></span><input aria-label={t('分数阈值（Score threshold）')} type="number" required min={0} max={1} step={0.01} value={scoreThreshold} onChange={event=>setScoreThreshold(Number(event.target.value))}/></label>
-              </div>
+              {multiRoute ? <>
+                <h4 className="label-with-tip">{t('多路召回策略')}<InfoTip label={t('多路召回策略说明')} text={t('各知识库分别召回候选片段，合并去重后统一重排，再按分数阈值筛选并保留最终 Top K。任一路失败时不会使用部分结果评分。')}/></h4>
+                <div className="field"><span className="label-with-tip">{t('重排模型（Reranker）')}<InfoTip label={t('重排模型说明')} text={t('默认使用空间设置中的重排模型，可为本次评测单独更换。多选知识库时必须选择重排模型。')}/></span>
+                  <SearchableSelect label={t('重排模型（Reranker）')} language={language} value={reranker} disabled={busy || !loaded} options={[{value:'',label:t('未选择重排模型')},...rerankers]} onChange={setReranker}/>
+                  {!validReranker && <small className="error-text" role="alert">{t(reranker?'原重排模型已失效，请重新选择':'多路召回需要选择重排模型，或在空间设置中配置默认重排模型')}</small>}
+                </div>
+                <div className="evaluation-evidence-grid">
+                  <label className="field"><span className="label-with-tip">{t('每库召回数量')}<InfoTip label={t('每库召回数量说明')} text={t('每个知识库提供的候选片段上限，范围 1–100，不能小于最终 Top K。候选片段越多，重排请求越大。')}/></span><input aria-label={t('每库召回数量')} type="number" required min={topK} max={100} value={candidateK} onChange={event=>setCandidateK(Number(event.target.value))}/></label>
+                  <label className="field"><span className="label-with-tip">{t('最终 Top K')}<InfoTip label={t('最终 Top K 说明')} text={t('合并重排和阈值筛选后最多保留的结果数量，也用于 Recall@K、MRR 和 nDCG 的计算。')}/></span><input aria-label={t('最终 Top K')} type="number" required min={1} max={100} value={topK} onChange={event=>{const next=Number(event.target.value);setTopK(next);setCandidateK(current=>Math.max(current,next));}}/></label>
+                  <label className="field"><span className="label-with-tip">{t('分数阈值（Score threshold）')}<InfoTip label={t('分数阈值说明')} text={t('范围 0–1，仅保留分数不低于阈值的结果。筛选后可能少于 Top K 或没有结果。')}/></span><input aria-label={t('分数阈值（Score threshold）')} type="number" required min={0} max={1} step={0.01} value={scoreThreshold} onChange={event=>setScoreThreshold(Number(event.target.value))}/></label>
+                </div>
+              </> : <p className="field-help">{t('单知识库将使用 Dify 当前保存的检索配置。')}</p>}
             </>}
           </section>
           <section className="evaluation-setup-section" aria-labelledby="evaluation-score-heading">

@@ -61,7 +61,10 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
             raise HTTPException(400, '当前评测仅支持单轮样本')
         target = resolve(payload.target.selection.model_dump(), payload.target.benchmark)
         primary = target.copy()
-        multi_route = bool(payload.target.selections or payload.target.retrieval_reranker or payload.target.retrieval_score_threshold is not None)
+        # A single Dify knowledge base should use Dify's own current retrieval
+        # settings. PrismLab's fusion controls are only meaningful once there
+        # are multiple routes (or an explicit local override is supplied).
+        multi_route = bool(len(payload.target.selections) > 1 or payload.target.retrieval_reranker or payload.target.retrieval_score_threshold is not None)
         target.update(**payload.target.model_dump(exclude={'selection','benchmark','selections','retrieval_reranker'}))
         if multi_route:
             selections = payload.target.selections or [payload.target.selection]

@@ -5,6 +5,7 @@ const english: Record<string, string> = {
   "重排服务拒绝了请求，请检查重排模型名称、接口和参数配置。": "The reranker rejected the request. Check its model name, endpoint, and parameters.",
   "多路召回策略": "Retrieval fusion strategy",
   "多路召回策略说明": "About retrieval fusion",
+  "单知识库将使用 Dify 当前保存的检索配置。": "A single knowledge base uses its current Dify retrieval configuration.",
   "各知识库分别召回候选片段，合并去重后统一重排，再按分数阈值筛选并保留最终 Top K。任一路失败时不会使用部分结果评分。": "Retrieve candidates from each knowledge base, merge and deduplicate them, rerank them together, then apply the score threshold and final Top K. If any route fails, partial results are not scored.",
   "重排模型（Reranker）": "Reranker model",
   "默认重排模型（Reranker）": "Default reranker model",
