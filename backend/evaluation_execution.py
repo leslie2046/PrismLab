@@ -94,36 +94,9 @@ class RequestTracker:
         return self.call('judge', limit, request)
 
 
-def load_dify_retrieval_model(config, target, key, tracker):
-    """Keep the knowledge base's search/reranking settings; only override K."""
-    root = config['base_url'].rstrip('/')
-    if not root.endswith('/v1'):
-        root += '/v1'
-    endpoint = root+'/datasets/'+quote(config['dataset_id'], safe='')
-    def request():
-        response = requests.get(endpoint, headers={'Authorization': 'Bearer '+key} if key else {},
-                                timeout=(5, target['timeout_seconds']), allow_redirects=False)
-        response.raise_for_status()
-        if not 200 <= response.status_code < 300:
-            raise EvaluationFailure('unexpected_redirect', True)
-        if len(response.content) > 2_000_000:
-            raise EvaluationFailure('response_too_large', True)
-        try:
-            data = response.json()
-        except ValueError:
-            raise EvaluationFailure('dify_retrieval_configuration_missing', True) from None
-        settings = (data.get('retrieval_model_dict') or data.get('retrieval_model')) if isinstance(data, dict) else None
-        if not isinstance(settings, dict) or not settings.get('search_method'):
-            raise EvaluationFailure('dify_retrieval_configuration_missing', True)
-        return {**settings, 'top_k': target['retrieval_top_k']}
-    return tracker.call('target', 0, request)
-
-
-def call_target(sample, target, config, key, tracker, conversation_id="", retrieval_model=None):
+def call_target(sample, target, config, key, tracker, conversation_id=""):
     if target['benchmark'] not in {'llm', 'dify-chat', 'dify-retrieve'}:
         raise EvaluationFailure('unsupported_target', True)
-    if target['benchmark'] == 'dify-retrieve' and retrieval_model is None:
-        retrieval_model = load_dify_retrieval_model(config, target, key, tracker)
     headers = {'Authorization': 'Bearer '+key} if key else {}
     started = time.perf_counter()
     def request():
@@ -141,7 +114,10 @@ def call_target(sample, target, config, key, tracker, conversation_id="", retrie
             root += '/v1'
         if benchmark == 'dify-retrieve':
             endpoint = root+'/datasets/'+quote(config['dataset_id'], safe='')+'/retrieve'
-            payload = {'query': sample['input'], 'retrieval_model': retrieval_model}
+            # Let Dify apply the knowledge base's current retrieval settings.
+            # Evaluation-specific top-k/threshold controls are applied only to
+            # the merged results in evaluation_retrieval.py, never sent here.
+            payload = {'query': sample['input']}
         else:
             endpoint = root+'/chat-messages'
             payload = {'inputs': {}, 'query': sample['input'], 'response_mode': 'blocking',
@@ -175,8 +151,7 @@ def call_target(sample, target, config, key, tracker, conversation_id="", retrie
         usage = metadata.get('usage') or {}
         tracker.usage('target', usage)
         return {'actual_output': answer, 'retrieval_context': contexts, 'retrieved_chunk_ids': ids,
-                'metadata': {'sources': sources, 'conversation_id': data.get('conversation_id'),
-                             **({'retrieval_model': safe_evidence(retrieval_model)} if benchmark == 'dify-retrieve' else {})},
+                'metadata': {'sources': sources, 'conversation_id': data.get('conversation_id')},
                 'usage': tracker.stage_usage.copy()}
     result = tracker.call('target', 0 if target['benchmark'] == 'dify-retrieve' else target['max_tokens'], request)
     result['duration_ms'] = round((time.perf_counter()-started)*1000, 2)
@@ -310,7 +285,6 @@ def run_evaluation(repo, claim, resolve_access):
         judge_config, judge_key = resolve(evidence['result_judge']) if evidence.get('result_judge') else (None,None)
         judge_parameters = (evidence['result_judge'].get('inference_parameters') or generation_parameters(
             judge_config, judge_key, evidence['budget']['judge_max_tokens'])) if judge_config else None
-        retrieval_model = None
         version = repo.version(evidence['dataset_version_id'])
         samples = {s['id']: s for s in version['samples']}
         for case in run['cases']:
@@ -321,15 +295,10 @@ def run_evaluation(repo, claim, resolve_access):
                 try:
                     if evidence['target']['benchmark'] == 'dify-retrieve':
                         if routes:
-                            from backend.evaluation_retrieval import retrieve_many, load_route_models
-                            if retrieval_model is None:
-                                retrieval_model = load_route_models(routes, evidence['target'], tracker)
-                            observation = retrieve_many(sample, evidence['target'], routes, retrieval_model, reranker, tracker)
-                        elif retrieval_model is None:
-                            retrieval_model = load_dify_retrieval_model(target_config, evidence['target'], target_key, tracker)
+                            from backend.evaluation_retrieval import retrieve_many
+                            observation = retrieve_many(sample, evidence['target'], routes, reranker, tracker)
                         if not routes:
-                            observation = call_target(sample,evidence['target'],target_config,target_key,tracker,
-                                                      retrieval_model=retrieval_model)
+                            observation = call_target(sample,evidence['target'],target_config,target_key,tracker)
                     else:
                         observation = call_target(sample,evidence['target'],target_config,target_key,tracker)
                     repo.record_target(run_id,case['id'],token,observation=observation)

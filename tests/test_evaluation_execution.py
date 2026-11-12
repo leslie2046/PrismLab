@@ -168,55 +168,45 @@ class ExecutionTests(unittest.TestCase):
         self.config['dataset_id']='external-kb'
         response=unittest.mock.MagicMock(status_code=200,content=b'{}')
         response.json.return_value={'records':[{'segment':{'id':'actual-chunk','document_id':'doc','content':'Actual content'}}]}
-        with patch('backend.evaluation_execution.requests.get',return_value=dify_settings_response()) as get, \
+        with patch('backend.evaluation_execution.requests.get') as get, \
              patch('backend.evaluation_execution.requests.post',return_value=response) as post:
             run=self.execute(self.prepare())
         self.assertEqual(run['status'],'completed',run)
         self.assertEqual(run['cases'][0]['observation']['retrieved_chunk_ids'],['actual-chunk'])
         self.assertEqual(run['cases'][0]['observation']['retrieval_context'],['Actual content'])
         self.assertEqual(post.call_count,1)
-        get.assert_called_once()
-        expected = {**dify_settings_response().json()['retrieval_model_dict'],
-                    'top_k': run['evidence']['target']['retrieval_top_k']}
-        self.assertEqual(post.call_args.kwargs['json']['retrieval_model'], expected)
-        self.assertEqual(run['cases'][0]['observation']['metadata']['retrieval_model'], expected)
-        self.assertEqual(run['usage']['target']['requests'], 2)
+        get.assert_not_called()
+        self.assertEqual(post.call_args.kwargs['json'], {'query': 'Question'})
+        self.assertNotIn('retrieval_model', run['cases'][0]['observation']['metadata'])
+        self.assertEqual(run['usage']['target']['requests'], 1)
         self.assertEqual(summarize(run)['metrics'],{})
 
-    def test_dify_settings_loaded_once_per_run_and_only_k_changes(self):
+    def test_dify_retrieval_sends_only_query_for_every_sample(self):
         self.request.update(template='retrieve_only',metrics=[])
         self.request['target'].update(benchmark='dify-retrieve', retrieval_top_k=7)
         self.config['dataset_id']='external kb/1'
         self.repo.add(self.dataset_id, [{'input':'Second question','expected_output':'Reference'}])
-        settings = dify_settings_response()
-        settings.json.return_value['retrieval_model_dict']['api_key']='must-not-persist'
-        original = deepcopy(settings.json.return_value)
         response=unittest.mock.MagicMock(status_code=200,content=b'{}')
         response.json.return_value={'records':[]}
-        with patch('backend.evaluation_execution.requests.get',return_value=settings) as get, \
+        with patch('backend.evaluation_execution.requests.get') as get, \
              patch('backend.evaluation_execution.requests.post',return_value=response) as post:
             run=self.execute(self.prepare())
         self.assertEqual(run['status'],'completed',run)
-        self.assertEqual(get.call_count,1)
-        self.assertTrue(get.call_args.args[0].endswith('/datasets/external%20kb%2F1'))
-        self.assertFalse(get.call_args.kwargs['allow_redirects'])
+        get.assert_not_called()
         self.assertEqual(post.call_count,2)
         for call in post.call_args_list:
-            self.assertEqual(call.kwargs['json']['retrieval_model'],
-                             {**original['retrieval_model_dict'],'top_k':7})
-        self.assertEqual(settings.json.return_value, original)
-        self.assertEqual(run['usage']['target']['requests'],3)
-        self.assertNotIn('must-not-persist',json.dumps(run))
+            self.assertEqual(call.kwargs['json'], {'query': 'Question'})
+        self.assertEqual(run['usage']['target']['requests'],2)
 
-    def test_dify_metadata_read_counts_against_budget_before_retrieval(self):
+    def test_dify_retrieval_request_counts_against_budget(self):
         self.request.update(template='retrieve_only',metrics=[])
         self.request['target']['benchmark']='dify-retrieve'
         self.request['budget']['max_requests']=1
         self.config['dataset_id']='external-kb'
-        with patch('backend.evaluation_execution.requests.get',return_value=dify_settings_response()) as get, \
+        with patch('backend.evaluation_execution.requests.get') as get, \
              patch('backend.evaluation_execution.requests.post') as post:
             run=self.execute(self.prepare())
-        get.assert_called_once();post.assert_not_called()
+        get.assert_not_called();post.assert_called_once()
         self.assertEqual(run['error'],'budget_exhausted')
         self.assertEqual(run['usage']['target']['requests'],1)
 

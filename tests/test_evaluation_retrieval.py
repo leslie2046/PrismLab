@@ -62,7 +62,7 @@ class MultiRetrievalTests(unittest.TestCase):
         return reply({'records':[{'segment':{'id':id,'content':text,'document_id':'doc'},'score':score} for id,text,score in values]})
 
     def build(self):
-        with patch('backend.evaluation_execution.requests.get',return_value=execution.dify_settings_response()) as get, \
+        with patch('backend.evaluation_execution.requests.get') as get, \
              patch('backend.evaluation_execution.requests.post',side_effect=self.post) as post:
             run=self.execute(self.prepare())
         return run,get,post
@@ -77,17 +77,15 @@ class MultiRetrievalTests(unittest.TestCase):
         self.assertEqual([r['score'] for r in run['metric_results']],[1,1])
         self.assertEqual([s['config_id'] for s in observation['metadata']['sources']],['b','a'])
         self.assertEqual([s['score'] for s in observation['metadata']['sources']],[.9,.6])
-        self.assertEqual(get.call_count,2)
-        self.assertEqual(run['usage']['target']['requests'],4)
+        get.assert_not_called()
+        self.assertEqual(run['usage']['target']['requests'],2)
         self.assertEqual(run['usage']['reranker']['requests'],1)
         rank=next(body for url,body in self.posts if url.endswith('/rerank'))
         self.assertEqual(rank['documents'],['A first','A second','B first'])
         self.assertEqual(rank['top_n'],2)
         for url,body in self.posts:
             if not url.endswith('/rerank'):
-                self.assertEqual(body['retrieval_model']['top_k'],3)
-                self.assertFalse(body['retrieval_model']['score_threshold_enabled'])
-                self.assertEqual(body['retrieval_model']['search_method'],'hybrid_search')
+                self.assertEqual(body, {'query': 'Question'})
         self.assertNotIn('private-key',json.dumps(run))
 
     def test_threshold_can_yield_empty_valid_retrieval(self):
@@ -245,8 +243,8 @@ class MultiRetrievalTests(unittest.TestCase):
     def test_settings_loaded_once_and_reranker_called_for_each_sample(self):
         self.repo.add(self.dataset_id,[{'input':'Second question','expected_output':'Reference'}])
         run,get,_=self.build()
-        self.assertEqual(get.call_count,2)
-        self.assertEqual(run['usage']['target']['requests'],6)
+        get.assert_not_called()
+        self.assertEqual(run['usage']['target']['requests'],4)
         self.assertEqual(run['usage']['reranker']['requests'],2)
         self.assertTrue(all(c['observation']['retrieved_chunk_ids']==['b1','a2'] for c in run['cases']))
 

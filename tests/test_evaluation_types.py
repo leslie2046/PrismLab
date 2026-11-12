@@ -63,7 +63,7 @@ class EvaluationTypeTests(unittest.TestCase):
         build.assert_called_once()
         self.retrieval_request()
         target=MagicMock(status_code=200,content=b'{}');target.json.return_value={'records':[]}
-        with patch('backend.evaluation_execution.requests.get',return_value=execution_fixtures.dify_settings_response()), \
+        with patch('backend.evaluation_execution.requests.get'), \
              patch('backend.evaluation_execution.requests.post',return_value=target),patch('backend.evaluation_execution.stream_chat') as model:
             run=self.execute(self.prepare())
         self.assertTrue(all(metric['status']=='missing_data' and metric['score'] is None for metric in run['metric_results']))
@@ -90,7 +90,7 @@ class EvaluationTypeTests(unittest.TestCase):
             c.execute('INSERT INTO dataset_annotations VALUES (%s,%s,%s)',(item['id'],self.dataset_id,json.dumps(annotation)))
         response=MagicMock(status_code=200,content=b'{}')
         response.json.return_value={'records':[{'segment':{'id':'b','content':'irrelevant'}},{'segment':{'id':'a','content':'relevant'}}]}
-        with patch('backend.evaluation_execution.requests.get',return_value=execution_fixtures.dify_settings_response()), \
+        with patch('backend.evaluation_execution.requests.get'), \
              patch('backend.evaluation_execution.requests.post',return_value=response) as post,patch('backend.evaluation_execution.stream_chat') as model:
             run=self.execute(self.prepare())
         self.assertEqual(run['status'],'completed',run)
@@ -98,7 +98,7 @@ class EvaluationTypeTests(unittest.TestCase):
         self.assertEqual([r['score'] for r in run['metric_results'] if r['metric_id']=='rules.mrr'],[.5])
         self.assertIsNone(run['cases'][0]['observation']['actual_output'])
         model.assert_not_called(); self.assertEqual(post.call_count,1)
-        self.assertEqual(post.call_args.kwargs['json']['retrieval_model']['top_k'],2)
+        self.assertEqual(post.call_args.kwargs['json'], {'query': 'Question'})
         self.assertIsNone(run['evidence']['result_judge'])
 
     def test_list_returns_typed_summaries_without_detail_or_history_rewrites(self):

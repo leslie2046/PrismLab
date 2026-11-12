@@ -6,18 +6,7 @@ import time
 import requests
 
 from backend.evaluation_contracts import safe_evidence
-from backend.evaluation_execution import EvaluationFailure, call_target, load_dify_retrieval_model
-
-
-def load_route_models(routes, target, tracker):
-    models = []
-    for _, config, key in routes:
-        model = load_dify_retrieval_model(config, target, key, tracker)
-        # Retain each knowledge base's search mode and hybrid/reranking settings.
-        # Final filtering belongs after the common reranker, on comparable scores.
-        models.append({**model, 'top_k': target['retrieval_candidate_top_k'],
-                       'score_threshold_enabled': False})
-    return models
+from backend.evaluation_execution import EvaluationFailure, call_target
 
 
 def _number(value):
@@ -85,11 +74,11 @@ def rerank_candidates(query, candidates, target, reranker, tracker):
     return tracker.call('reranker', 0, request)
 
 
-def retrieve_many(sample, target, routes, models, reranker, tracker):
+def retrieve_many(sample, target, routes, reranker, tracker):
     started = time.perf_counter()
     def retrieve(index):
         snapshot, config, key = routes[index]
-        observation = call_target(sample, target, config, key, tracker, retrieval_model=models[index])
+        observation = call_target(sample, target, config, key, tracker)
         contexts = observation.get('retrieval_context')
         if not isinstance(contexts, list):
             raise EvaluationFailure('invalid_target_response', True)
@@ -135,5 +124,4 @@ def retrieve_many(sample, target, routes, models, reranker, tracker):
                 'candidate_top_k': target['retrieval_candidate_top_k'],
                 'top_k': target['retrieval_top_k'], 'score_threshold': threshold,
                 'reranker_parameters': reranker_parameters(reranker[0]) if reranker else {},
-                'routes': [{'config_id': route[0]['selection']['id'],
-                            'retrieval_model': safe_evidence(model)} for route, model in zip(routes, models)]}}}
+                 'routes': [{'config_id': route[0]['selection']['id']} for route in routes]}}}
