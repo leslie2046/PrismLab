@@ -211,10 +211,23 @@ class EvaluationStore(EvaluationJobStore):
         query += ' ORDER BY r.created_at DESC,r.id DESC LIMIT %s'
         params.append(limit)
         with self.store._session() as connection:
-            return [{**json.loads(row['payload']), 'evaluation_type': evaluation_type(json.loads(row['evidence'])),
+            rows = connection.execute(query, tuple(params)).fetchall()
+            if not rows:
+                return []
+            runs = [json.loads(row['payload']) for row in rows]
+            run_ids = [run['id'] for run in runs]
+            metric_results = {run_id: [] for run_id in run_ids}
+            for metric_row in connection.execute(
+                    'SELECT run_id,payload FROM metric_results WHERE run_id=ANY(%s)', (run_ids,)).fetchall():
+                metric_results[metric_row['run_id']].append(json.loads(metric_row['payload']))
+            summaries = {}
+            for run, row in zip(runs, rows):
+                evidence = json.loads(row['evidence'])
+                summaries[run['id']] = {'metrics': summarize_metrics(evidence.get('metrics', []), metric_results[run['id']])}
+            return [{**run, 'evaluation_type': evaluation_type(json.loads(row['evidence'])),
                      'dataset_id': row['dataset_id'], 'dataset_version_id': row['dataset_version_id'],
-                     'dataset_name': row['dataset_name']}
-                    for row in connection.execute(query, tuple(params)).fetchall()]
+                     'dataset_name': row['dataset_name'], 'summary': summaries[run['id']]}
+                    for run, row in zip(runs, rows)]
 
     def version(self, version_id):
         with self.store._session() as connection:

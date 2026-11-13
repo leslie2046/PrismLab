@@ -1,4 +1,4 @@
-import {useEffect,useId,useRef,useState} from 'react';
+import {useEffect,useId,useMemo,useRef,useState} from 'react';
 import {ArrowLeft,Download,Play,Plus,RefreshCw,Search,Square,Trash2} from 'lucide-react';
 import type {Catalog,Dataset} from '../types';
 import {tr,type Language} from '../i18n';
@@ -9,7 +9,7 @@ import {evaluationApi,type Evaluation,type EvaluationSummary,type Version} from 
 import {evaluationType,evaluationSummaryType,evaluationTypeLabels} from '../evaluationTypes';
 import {evaluationFailures,evaluationLabels} from '../evaluationPresentation';
 import {WorkspaceDialog} from './WorkspaceDialog';
-import {EvaluationDialog} from './EvaluationDialog';
+import {EvaluationDialog,metricNames} from './EvaluationDialog';
 import {EvaluationScores} from './EvaluationScores';
 import {EvaluationSamples} from './EvaluationSamples';
 import {EvaluationStatus} from './EvaluationStatus';
@@ -20,6 +20,29 @@ import '../evaluations.css';
 const errorText=(error:unknown)=>error instanceof Error?error.message:String(error);
 const tabs=[['results','评测结果'],['configuration','运行配置']] as const;
 type Tab=typeof tabs[number][0];
+
+function EvaluationResultsVisualization({runs,language}:{runs:EvaluationSummary[];language:Language}) {
+  const t=(text:string)=>tr(language,text);
+  const metricIds=useMemo(()=>{
+    const ids:string[]=[];const seen=new Set<string>();
+    runs.forEach(run=>Object.keys(run.summary?.metrics||{}).forEach(id=>{if(!seen.has(id)){seen.add(id);ids.push(id)}}));
+    return ids;
+  },[runs]);
+  if(!runs.length||!metricIds.length)return null;
+  const columns=`minmax(190px,1.35fr) repeat(${metricIds.length},minmax(150px,1fr))`;
+  return <section className="evaluation-results-visualization" aria-labelledby="evaluation-results-visualization-title">
+    <div className="evaluation-results-visualization-head"><div><h2 id="evaluation-results-visualization-title">{t('评测结果可视化')}</h2><p>{t('汇总当前筛选结果的指标均分，分数范围 0–1。')}</p></div><span>{runs.length} {t('条评测')}</span></div>
+    <div className="evaluation-results-chart-scroll">
+      <div className="evaluation-results-chart" role="table" aria-label={t('所有评测指标均分')}>
+        <div className="evaluation-results-chart-row evaluation-results-chart-header" role="row" style={{gridTemplateColumns:columns}}><span role="columnheader">{t('评测')}</span>{metricIds.map(id=><span role="columnheader" key={id}>{t(metricNames[id]||id)}</span>)}</div>
+        {runs.map(run=><div className="evaluation-results-chart-row" role="row" style={{gridTemplateColumns:columns}} key={run.id}>
+          <div className="evaluation-results-chart-label" role="rowheader"><strong>{run.name||run.id.slice(0,8)}</strong><small>{t(evaluationLabels[run.status]||run.status)} · {new Date(run.created_at).toLocaleDateString(language)}</small></div>
+          {metricIds.map(id=>{const score=run.summary?.metrics?.[id]?.mean;return <div className="evaluation-results-chart-cell" role="cell" key={id} aria-label={`${t(metricNames[id]||id)} ${score==null?t('暂无评分'):score.toFixed(3)}`}><div className="evaluation-results-chart-track"><span style={{width:score==null?'0%':`${Math.max(0,Math.min(1,score))*100}%`}}/></div><strong>{score==null?'—':score.toFixed(3)}</strong></div>})}
+        </div>)}
+      </div>
+    </div>
+  </section>;
+}
 
 export function Evaluations({catalog,language,dataset,onDatasets}:{catalog:Catalog|null;language:Language;dataset?:Dataset;onDatasets?:()=>void}) {
   const t=(text:string)=>tr(language,text),tabId=useId();
@@ -83,6 +106,7 @@ export function Evaluations({catalog,language,dataset,onDatasets}:{catalog:Catal
         <label className="field"><span>{t('评测状态')}</span><select aria-label={t('筛选评测状态')} value={runStatus} onChange={event=>setRunStatus(event.target.value)}><option value="all">{t('全部状态')}</option>{['prepared','running','completed','partial_failed','failed','cancelled'].map(status=><option value={status} key={status}>{t(evaluationLabels[status])}</option>)}</select></label>
         <span>{t('显示')} {visibleRuns.length} / {runs.length}</span>
       </div>
+      <EvaluationResultsVisualization runs={visibleRuns} language={language}/>
       <div className="evaluation-table-scroll evaluation-run-list" tabIndex={0} aria-label={t('评测运行列表')}><table className="data-table"><thead><tr>{['名称','评测类型','状态','样本数','创建时间',...(canManage?['操作']:[])].map(label=><th scope="col" key={label}>{t(label)}</th>)}</tr></thead><tbody>{visibleRuns.map(run=><tr key={run.id}><td><button className="text-button" onClick={()=>openRun(run.id)}>{run.name||run.id.slice(0,12)}</button><small className="evaluation-run-id">{run.id.slice(0,8)}</small></td><td>{summaryLabel(run)}</td><td><EvaluationStatus status={run.status} language={language}/></td><td>{run.case_count}</td><td>{new Date(run.created_at).toLocaleString(language)}</td>{canManage&&<td className="evaluation-delete-cell">{deleteAction(run)}</td>}</tr>)}</tbody></table></div>
       {!visibleRuns.length&&<EmptyState title={t(runs.length?'没有匹配的评测':dataset?'暂无评测记录。发起评测后，可在这里查看指标得分与样本结果。':'尚无评测。选择 RAG 评测或检索评测，先试跑少量样本。')} />}
     </>}

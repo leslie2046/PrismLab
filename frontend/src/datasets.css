@@ -189,6 +189,7 @@
 .dataset-evaluations.panel { border:0; border-radius:0; padding:0; }
 .dataset-evaluations > .panel-head { padding:20px 24px 16px; }
 .dataset-evaluations > .evaluation-list-toolbar { margin:0; padding:12px 24px; }
+.dataset-evaluations > .evaluation-results-visualization { margin-inline:24px; }
 .dataset-evaluations > .evaluation-table-scroll { border-inline:0; border-radius:0; }
 .dataset-evaluations > .evaluation-summary, .dataset-evaluations > .evaluation-run-actions,
 .dataset-evaluations > .evaluation-tabs, .dataset-evaluations > [role="tabpanel"],
@@ -200,6 +201,7 @@
  .dataset-local-tabs { gap:16px; }
  .dataset-evaluations > .panel-head { padding:16px; }
  .dataset-evaluations > .evaluation-list-toolbar { padding:12px 16px; }
+ .dataset-evaluations > .evaluation-results-visualization { margin-inline:16px; }
  .dataset-evaluations > .evaluation-summary, .dataset-evaluations > .evaluation-run-actions,
  .dataset-evaluations > .evaluation-tabs, .dataset-evaluations > [role="tabpanel"],
  .dataset-evaluations > .alert { margin-inline:12px; }
