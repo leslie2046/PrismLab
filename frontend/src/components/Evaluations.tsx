@@ -13,13 +13,12 @@ import {EvaluationDialog} from './EvaluationDialog';
 import {EvaluationScores} from './EvaluationScores';
 import {EvaluationSamples} from './EvaluationSamples';
 import {EvaluationStatus} from './EvaluationStatus';
-import {EvaluationComparison} from './EvaluationComparison';
 import {PageHeader} from './PageHeader';
 import {EmptyState} from './EmptyState';
 import '../evaluations.css';
 
 const errorText=(error:unknown)=>error instanceof Error?error.message:String(error);
-const tabs=[['results','评测结果'],['analysis','对比分析'],['configuration','运行配置']] as const;
+const tabs=[['results','评测结果'],['configuration','运行配置']] as const;
 type Tab=typeof tabs[number][0];
 
 export function Evaluations({catalog,language,dataset,onDatasets}:{catalog:Catalog|null;language:Language;dataset?:Dataset;onDatasets?:()=>void}) {
@@ -110,9 +109,6 @@ export function Evaluations({catalog,language,dataset,onDatasets}:{catalog:Catal
           <dl className="evaluation-counts">{['completed','not_passed','target_error','judge_error','missing_data'].map(status=><div key={status}><dt>{t(status==='not_passed'?'未通过':evaluationLabels[status])}</dt><dd>{selected.summary?.counts[status]??0}</dd></div>)}{Object.entries(selected.usage||{}).map(([stage,value])=><div key={stage}><dt>{t(stage==='target'?'应用调用用量':stage==='reranker'?'重排调用用量':'评分调用用量')}</dt><dd>{value.requests} {t('次请求')} · {value.output_tokens??'—'} tokens</dd></div>)}<div><dt>{t('成本')}</dt><dd>{t('成本未知')}</dd></div></dl>
           <details className="evaluation-frozen"><summary>{t('评测快照配置')}</summary><pre>{JSON.stringify(selected.evidence,null,2)}</pre></details>
         </>}
-        <div hidden={tab!=='analysis'}>
-          <EvaluationComparison key={selected.id} run={selected} runs={runs} version={version} language={language}/>
-        </div>
       </div>
     </>}
     {deleting&&<WorkspaceDialog title={t('删除评测记录')} busy={deleteBusy} language={language} onClose={()=>setDeleting(null)}><form className="workspace-dialog-body" onSubmit={event=>{event.preventDefault();void confirmDelete()}}>

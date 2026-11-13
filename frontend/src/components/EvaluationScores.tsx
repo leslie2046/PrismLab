@@ -22,7 +22,6 @@ export function EvaluationScores({run, language}:{run:Evaluation;language:Langua
           {!!Object.keys(unscored).length&&<p className="evaluation-card-warning">{Object.entries(unscored).map(([status,count])=>`${t(evaluationLabels[status]||status)} ${count}`).join(' · ')}</p>}
         </article>;
       })}</div>
-      <details className="evaluation-metric-statistics"><summary>{t('指标统计详情')}</summary><div className="evaluation-table-scroll" tabIndex={0} aria-label={t('指标得分汇总表')}><table className="data-table evaluation-score-table"><thead><tr>{['指标','平均分','通过率','有效评分 / 总样本','通过阈值','未评分'].map(label=><th scope="col" key={label}>{t(label)}</th>)}</tr></thead><tbody>{metrics.map(({metric,mean,scored,passRate,threshold,unscored})=><tr key={metric.id}><th scope="row">{t(metricNames[metric.id]||metric.id)}<small>{metric.id}</small></th><td>{mean==null?'—':mean.toFixed(3)}</td><td>{passRate==null?'—':`${(passRate*100).toFixed(1)}%`}</td><td>{scored} / {run.case_count}</td><td>{typeof threshold==='number'?`≥ ${threshold.toFixed(3)}`:'—'}</td><td>{Object.entries(unscored).map(([status,count])=>`${t(evaluationLabels[status]||status)} ${count}`).join(' · ')||'—'}</td></tr>)}</tbody></table></div></details>
     </>}
   </section>;
 }
