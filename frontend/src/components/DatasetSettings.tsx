@@ -32,7 +32,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const [judgePrompt, setJudgePrompt] = useState('');
   const [defaultJudgePrompt, setDefaultJudgePrompt] = useState('');
   const [evaluationMaxRequests, setEvaluationMaxRequests] = useState('500');
-  const [evaluationMaxOutputTokens, setEvaluationMaxOutputTokens] = useState('500000');
+  const [evaluationMaxOutputTokens, setEvaluationMaxOutputTokens] = useState('1000000');
   const [evaluationConcurrency, setEvaluationConcurrency] = useState('3');
   const [prompt, setPrompt] = useState('');
   const [defaultPrompt, setDefaultPrompt] = useState('');
@@ -69,7 +69,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
       setJudge(selectionValue(value.default_judge_llm)); setScoringEngine(value.scoring_engine); setJudgePrompt(value.judge_prompt); setDefaultJudgePrompt(value.default_judge_prompt); setLoaded(true);
       setReranker(selectionValue(value.default_reranker || null));
       setEvaluationMaxRequests(String(value.evaluation_max_requests ?? 500));
-      setEvaluationMaxOutputTokens(String(value.evaluation_max_output_tokens ?? 500000));
+      setEvaluationMaxOutputTokens(String(value.evaluation_max_output_tokens ?? 1000000));
       setEvaluationConcurrency(String(value.evaluation_max_concurrent ?? 3));
     } }).catch(reason => { if (active) setLoadError(reason.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };

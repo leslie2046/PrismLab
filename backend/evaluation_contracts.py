@@ -228,7 +228,7 @@ class MetricSelection(StrictContract):
 
 class EvaluationBudget(StrictContract):
     max_requests: int = Field(default=500, ge=1, le=100000)
-    max_output_tokens: int = Field(default=500000, ge=256, le=100000000)
+    max_output_tokens: int = Field(default=1000000, ge=256, le=100000000)
     judge_max_tokens: int = Field(default=2048, ge=256, le=8192)
     max_retries: int = Field(default=2, ge=0, le=4)
 

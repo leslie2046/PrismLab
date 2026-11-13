@@ -46,7 +46,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         return {'max_concurrent': value.get('dataset_max_concurrent', 3),
                 'evaluation_max_concurrent': value.get('evaluation_max_concurrent', 3),
                 'evaluation_max_requests': value.get('evaluation_max_requests', 500),
-                'evaluation_max_output_tokens': value.get('evaluation_max_output_tokens', 500000),
+                'evaluation_max_output_tokens': value.get('evaluation_max_output_tokens', 1000000),
                 'default_llm': value.get('dataset_default_llm'),
                 'default_embedding_model': value.get('dataset_default_embedding_model'),
                 'default_critic_llm': value.get('dataset_default_critic_llm'),

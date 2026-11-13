@@ -174,7 +174,7 @@ class DatasetSettings(StrictModel):
     max_concurrent: int = Field(default=3, ge=1, le=10, strict=True)
     evaluation_max_concurrent: int = Field(default=3, ge=1, le=10, strict=True)
     evaluation_max_requests: int = Field(default=500, ge=1, le=100000, strict=True)
-    evaluation_max_output_tokens: int = Field(default=500000, ge=256, le=100000000, strict=True)
+    evaluation_max_output_tokens: int = Field(default=1000000, ge=256, le=100000000, strict=True)
     default_llm: ProviderSelection | None = None
     default_embedding_model: ProviderSelection | None = None
     default_critic_llm: ProviderSelection | None = None
