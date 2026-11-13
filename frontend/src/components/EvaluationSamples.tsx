@@ -7,6 +7,8 @@ import {evaluationType} from '../evaluationTypes';
 import {metricNames} from './EvaluationDialog';
 import {EvaluationStatus} from './EvaluationStatus';
 import {WorkspaceDialog} from './WorkspaceDialog';
+import {Pagination,usePagination} from './Pagination';
+import {pageItems} from '../pagination';
 
 function Score({result,language}:{result:MetricResult|undefined;language:Language}) {
   const t=(text:string)=>tr(language,text);
@@ -41,6 +43,8 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
     }
     return found;
   },[run.cases,results,samples,query,filter,sort]);
+  const pagination=usePagination(visible.length,JSON.stringify([query,filter,sort]),10);
+  const pageVisible=useMemo(()=>pageItems(visible,pagination.page,pagination.pageSize),[visible,pagination.page,pagination.pageSize]);
   const chosen=run.cases.find(item=>item.id===caseId),sample=chosen?samples.get(chosen.sample_id):undefined;
   const position=visible.findIndex(item=>item.id===caseId);
   useEffect(()=>{content.current?.scrollTo(0,0)},[caseId]);
@@ -51,10 +55,11 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
       <label className="field"><span>{t('结果筛选')}</span><select aria-label={t('结果筛选')} value={filter} onChange={event=>setFilter(event.target.value)}>{[['all','全部'],['not_passed','未通过'],['failed','执行失败'],['missing_data','不可计算']].map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>
       <label className="field"><span>{t('样本排序')}</span><select aria-label={t('样本排序')} value={sort} onChange={event=>setSort(event.target.value)}><option value="original">{t('原始顺序')}</option>{run.evidence.metrics.flatMap(metric=>['asc','desc'].map(direction=><option key={metric.id+direction} value={`${direction}|${metric.id}`}>{t(metricNames[metric.id]||metric.id)} · {t(direction==='asc'?'低分优先':'高分优先')}</option>))}</select></label>
     </div>
-    <div className="evaluation-table-scroll evaluation-sample-matrix" tabIndex={0} aria-label={t('样本指标得分表')}><table className="data-table"><thead><tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{t(metricNames[metric.id]||metric.id)}</th>)}<th scope="col">{t('耗时')}</th></tr></thead><tbody>{visible.map(item=>{
+    <div className="evaluation-table-scroll evaluation-sample-matrix" tabIndex={0} aria-label={t('样本指标得分表')}><table className="data-table"><thead><tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{t(metricNames[metric.id]||metric.id)}</th>)}<th scope="col">{t('耗时')}</th></tr></thead><tbody>{pageVisible.map(item=>{
       const scores=results.get(item.id),question=samples.get(item.sample_id)?.input||item.sample_id;
       return <tr key={item.id} data-case-id={item.id}><td><button className="evaluation-question" onClick={()=>setCaseId(item.id)} title={question}>{question}</button></td><td><EvaluationStatus status={caseVerdict(item,[...(scores?.values()||[])],run.evidence.metrics.length)} language={language}/></td>{run.evidence.metrics.map(metric=><td key={metric.id}><Score result={scores?.get(metric.id)} language={language}/></td>)}<td>{item.observation?.duration_ms==null?'—':`${item.observation.duration_ms.toLocaleString(language)} ms`}</td></tr>;
     })}</tbody></table></div>
+    {visible.length>0&&<Pagination {...pagination} total={visible.length} language={language} label={t('样本')} pageSizes={[10,20,50]} />}
     {!visible.length&&<p className="dify-empty">{t('没有匹配的样本')}</p>}
     <p className="evaluation-guidance evaluation-sample-hint">{t('点击问题查看评分理由、参考答案与召回内容。')}</p>
     {chosen&&<WorkspaceDialog title={t('样本详情')} busy={false} language={language} onClose={()=>setCaseId(null)} className="evaluation-sample-drawer">
