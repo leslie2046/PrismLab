@@ -248,7 +248,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             <div className="evaluation-evidence-grid">
               <label className="field"><span className="label-with-tip">{t('运行范围')}<InfoTip label={t('运行范围说明')} text={t('试跑最多使用所选条数；全部样本仍受空间设置中的预算限制。')}/></span>
                 <select aria-label={t('运行范围')} value={scope} onChange={e => setScope(e.target.value)}>
-                  <option value="5">{t('先试跑 5 条（推荐）')}</option><option value="20">{t('先试跑 20 条')}</option>
+                  <option value="5">{t('先试跑 5 条（推荐）')}</option>
                   <option value="all">{t('全部样本')}</option><option value="custom">{t('自定义条数')}</option>
                 </select>
               </label>

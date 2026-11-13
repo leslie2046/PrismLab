@@ -1060,7 +1060,6 @@ Object.assign(english, {
   '没有可用的评审模型，请先在服务配置中添加大语言模型。':'No judge models available. Add a language model in service settings.',
   '运行范围':'Sample scope',
   '先试跑 5 条（推荐）':'Try up to 5 samples (recommended)',
-  '先试跑 20 条':'Try up to 20 samples',
   '全部样本':'All samples',
   '自定义条数':'Custom sample count',
   '样本数上限':'Maximum samples',
