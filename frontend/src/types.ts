@@ -162,7 +162,7 @@ export type DatasetItem = Golden & {
   generation_trace_id?: string; generation_record_id?: string;
   id: string; dataset_id: string; origin?: 'manual' | 'import' | 'generated'; status: 'active' | 'archived'; created_at: string; updated_at: string;
 };
-export type DatasetSettings = { default_reranker?: LlmSelection | null; max_concurrent: number; evaluation_max_requests: number; evaluation_max_output_tokens: number; default_embedding_model: LlmSelection | null; default_judge_llm: LlmSelection | null; scoring_engine: 'deepeval' | 'ragas'; judge_prompt: string; default_judge_prompt: string; default_llm: LlmSelection | null; default_critic_llm: LlmSelection | null; prompt: string; default_prompt: string; critic_prompt: string; default_critic_prompt: string };
+export type DatasetSettings = { default_reranker?: LlmSelection | null; max_concurrent: number; evaluation_max_concurrent: number; evaluation_max_requests: number; evaluation_max_output_tokens: number; default_embedding_model: LlmSelection | null; default_judge_llm: LlmSelection | null; scoring_engine: 'deepeval' | 'ragas'; judge_prompt: string; default_judge_prompt: string; default_llm: LlmSelection | null; default_critic_llm: LlmSelection | null; prompt: string; default_prompt: string; critic_prompt: string; default_critic_prompt: string };
 
 export type GenerationDetails = {
   availability: 'recorded' | 'unavailable'; edited: boolean;

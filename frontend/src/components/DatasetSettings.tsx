@@ -33,6 +33,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const [defaultJudgePrompt, setDefaultJudgePrompt] = useState('');
   const [evaluationMaxRequests, setEvaluationMaxRequests] = useState('500');
   const [evaluationMaxOutputTokens, setEvaluationMaxOutputTokens] = useState('500000');
+  const [evaluationConcurrency, setEvaluationConcurrency] = useState('3');
   const [prompt, setPrompt] = useState('');
   const [defaultPrompt, setDefaultPrompt] = useState('');
   const [criticPrompt, setCriticPrompt] = useState('');
@@ -56,6 +57,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const invalidConcurrency = !/^\d+$/.test(concurrency) || Number(concurrency) < 1 || Number(concurrency) > 10;
   const invalidEvaluationMaxRequests = !/^\d+$/.test(evaluationMaxRequests) || Number(evaluationMaxRequests) < 1 || Number(evaluationMaxRequests) > 100000;
   const invalidEvaluationMaxOutputTokens = !/^\d+$/.test(evaluationMaxOutputTokens) || Number(evaluationMaxOutputTokens) < 256 || Number(evaluationMaxOutputTokens) > 100000000;
+  const invalidEvaluationConcurrency = !/^\d+$/.test(evaluationConcurrency) || Number(evaluationConcurrency) < 1 || Number(evaluationConcurrency) > 10;
   const changed = (which: SettingsSection) => { setSaved(value => ({ ...value, [which]: false })); setErrors(value => ({ ...value, [which]: '' })); };
   useEffect(() => {
     let active = true;
@@ -68,11 +70,12 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
       setReranker(selectionValue(value.default_reranker || null));
       setEvaluationMaxRequests(String(value.evaluation_max_requests ?? 500));
       setEvaluationMaxOutputTokens(String(value.evaluation_max_output_tokens ?? 500000));
+      setEvaluationConcurrency(String(value.evaluation_max_concurrent ?? 3));
     } }).catch(reason => { if (active) setLoadError(reason.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [reload]);
   async function save(which: SettingsSection) {
-    if (disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())) return;
+    if (disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationConcurrency || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())) return;
     setBusy(which); changed(which);
     try {
       await datasetApi.saveSettings(which === 'generation' ? {
@@ -83,6 +86,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
         prompt: prompt === defaultPrompt ? null : prompt,
         critic_prompt: criticPrompt === defaultCriticPrompt ? null : criticPrompt,
       } : {
+        evaluation_max_concurrent: Number(evaluationConcurrency),
         evaluation_max_requests: Number(evaluationMaxRequests),
         evaluation_max_output_tokens: Number(evaluationMaxOutputTokens),
         default_judge_llm: judge ? JSON.parse(judge) : null,
@@ -98,7 +102,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
     {(loading || !catalog) && <p className="workspace-muted" role="status">{t('加载中…')}</p>}
     {loadError && <div className="alert" role="alert">{loadError}<button type="button" className="ghost compact" disabled={loading} onClick={() => setReload(value => value + 1)}>{t('重试')}</button></div>}
     {errors[which] && <div className="alert" role="alert">{errors[which]}</div>}
-    <div className="space-settings-footer">{!readOnly && <button className="primary compact" disabled={disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())}><Save aria-hidden="true" />{t(busy === which ? '保存中…' : '保存配置')}</button>}{saved[which] && <span className="success-text" role="status">{t('空间配置已保存')}</span>}</div>
+        <div className="space-settings-footer">{!readOnly && <button className="primary compact" disabled={disabled || (which === 'generation' ? stale || staleEmbedding || staleCritic || invalidConcurrency || !prompt.trim() || !criticPrompt.trim() : staleJudge || staleReranker || invalidEvaluationConcurrency || invalidEvaluationMaxRequests || invalidEvaluationMaxOutputTokens || !judgePrompt.trim())}><Save aria-hidden="true" />{t(busy === which ? '保存中…' : '保存配置')}</button>}{saved[which] && <span className="success-text" role="status">{t('空间配置已保存')}</span>}</div>
   </>;
   return <>
     <section className="panel system-settings-panel dataset-settings-panel" role="tabpanel" id="space-panel-generation" aria-labelledby="space-tab-generation" hidden={section !== 'generation'}>
@@ -146,6 +150,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
           {catalog && !rerankers.length && <small className="field-help">{t('暂无已配置的重排模型，请先在模型供应商中添加。')}</small>}
         </div>
         <div className="evaluation-evidence-grid">
+          <label className="field"><span className="label-with-tip">{t('评测并发数')}<InfoTip label={t('并发设置说明')} text={t('控制同一条评测同时处理的样本数。范围 1–10，默认 3；新建评测时冻结，已运行的评测不受修改影响。数值越大完成越快，但可能触发目标服务或评分模型限流。')} /></span><input required type="number" min="1" max="10" step="1" disabled={disabled} value={evaluationConcurrency} onChange={event => { setEvaluationConcurrency(event.target.value); changed('evaluation'); }} />{loaded && invalidEvaluationConcurrency && <small className="error-text">{t('请输入 1–10 之间的整数。')}</small>}</label>
           <label className="field"><span className="label-with-tip">{t('请求总数上限')}<InfoTip label={t('预算说明')} text={t('空间默认的单次评测请求总数上限，新建评测时自动使用。')} /></span><input required type="number" min="1" max="100000" disabled={disabled} value={evaluationMaxRequests} onChange={event => { setEvaluationMaxRequests(event.target.value); changed('evaluation'); }} />{loaded && invalidEvaluationMaxRequests && <small className="error-text">{t('请输入 1–100000 之间的整数。')}</small>}</label>
           <label className="field"><span className="label-with-tip">{t('输出 token 预留预算')}<InfoTip label={t('预算说明')} text={t('空间默认的单次评测输出 token 预留预算，新建评测时自动使用。')} /></span><input required type="number" min="256" max="100000000" disabled={disabled} value={evaluationMaxOutputTokens} onChange={event => { setEvaluationMaxOutputTokens(event.target.value); changed('evaluation'); }} />{loaded && invalidEvaluationMaxOutputTokens && <small className="error-text">{t('请输入 256–100000000 之间的整数。')}</small>}</label>
         </div>

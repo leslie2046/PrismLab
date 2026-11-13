@@ -5,6 +5,7 @@ import math
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 
 import requests
@@ -258,14 +259,30 @@ def score_rule(metric, sample, observation):
 def run_evaluation(repo, claim, resolve_access):
     run_id, token = claim['id'], claim['worker_token']
     stopped = threading.Event()
+    cancelled = threading.Event()
+    repository_lock = threading.RLock()
+
+    class SynchronizedRepository:
+        """Serialize payload read/modify/write transactions across sample workers."""
+        def __getattr__(self, name):
+            method = getattr(repo, name)
+            if not callable(method):
+                return method
+            def call(*args, **kwargs):
+                with repository_lock:
+                    return method(*args, **kwargs)
+            return call
+
+    worker_repo = SynchronizedRepository()
+
     def renew():
         while not stopped.wait(10):
-            try: repo.heartbeat(run_id, token)
+            try: worker_repo.heartbeat(run_id, token)
             except HTTPException: return
     heartbeat = threading.Thread(target=renew,daemon=True)
     heartbeat.start()
     try:
-        run = repo.get(run_id)
+        run = worker_repo.get(run_id)
         evidence = run['evidence']
         def resolve(snapshot):
             selection = snapshot['selection']
@@ -285,13 +302,15 @@ def run_evaluation(repo, claim, resolve_access):
         judge_config, judge_key = resolve(evidence['result_judge']) if evidence.get('result_judge') else (None,None)
         judge_parameters = (evidence['result_judge'].get('inference_parameters') or generation_parameters(
             judge_config, judge_key, evidence['budget']['judge_max_tokens'])) if judge_config else None
-        version = repo.version(evidence['dataset_version_id'])
+        version = worker_repo.version(evidence['dataset_version_id'])
         samples = {s['id']: s for s in version['samples']}
-        for case in run['cases']:
-            repo.heartbeat(run_id, token)
+        def process_case(case):
+            if cancelled.is_set():
+                return
+            worker_repo.heartbeat(run_id, token)
             sample = samples[case['sample_id']]
             if case['status'] == 'pending':
-                tracker = RequestTracker(repo,run_id,token,evidence['budget'])
+                tracker = RequestTracker(worker_repo,run_id,token,evidence['budget'])
                 try:
                     if evidence['target']['benchmark'] == 'dify-retrieve':
                         if routes:
@@ -301,7 +320,7 @@ def run_evaluation(repo, claim, resolve_access):
                             observation = call_target(sample,evidence['target'],target_config,target_key,tracker)
                     else:
                         observation = call_target(sample,evidence['target'],target_config,target_key,tracker)
-                    repo.record_target(run_id,case['id'],token,observation=observation)
+                    worker_repo.record_target(run_id,case['id'],token,observation=observation)
                 except Exception as error:
                     failure = classified(error)
                     if failure.code == 'stopped': return
@@ -314,11 +333,11 @@ def run_evaluation(repo, claim, resolve_access):
                         raise failure
                     if failure.permanent:
                         raise failure
-                    repo.record_target(run_id,case['id'],token,error=True)
-            current = repo.get(run_id)
+                    worker_repo.record_target(run_id,case['id'],token,error=True)
+            current = worker_repo.get(run_id)
             if current['status'] != 'running': return
             case = next(c for c in current['cases'] if c['id'] == case['id'])
-            if case['status'] != 'completed': continue
+            if case['status'] != 'completed': return
             for result in current['metric_results']:
                 if result['case_id'] != case['id'] or result['status'] != 'pending': continue
                 metric = next(m for m in evidence['metrics'] if m['id']==result['metric_id'])
@@ -326,26 +345,41 @@ def run_evaluation(repo, claim, resolve_access):
                                          'observation': {k:case['observation'].get(k) for k in ('actual_output','retrieval_context','retrieved_chunk_ids')},
                                          'target':evidence['target'], 'judge':evidence.get('result_judge'),
                                          'judge_inference_parameters':judge_parameters})
-                cached = repo.cache_get(cache_key) if evidence.get('use_cache') else None
-                tracker = RequestTracker(repo,run_id,token,evidence['budget'],judge_parameters)
+                cached = worker_repo.cache_get(cache_key) if evidence.get('use_cache') else None
+                tracker = RequestTracker(worker_repo,run_id,token,evidence['budget'],judge_parameters)
                 try:
                     if cached:
                         score, reason = cached['score'], cached['reason']
                     else:
                         score, reason = score_metric(metric,sample,case['observation'],evidence.get('result_judge'),judge_config,judge_key,tracker)
-                    repo.record_metric(run_id,result['id'],token,score=score,reason=reason,
+                    worker_repo.record_metric(run_id,result['id'],token,score=score,reason=reason,
                                        usage={**tracker.stage_usage,'cache_hit':bool(cached)})
                     if not cached and evidence.get('use_cache'):
-                        repo.cache_put(cache_key,{'score':score,'reason':reason})
+                        worker_repo.cache_put(cache_key,{'score':score,'reason':reason})
                 except Exception as error:
                     failure = classified(error)
                     if failure.code == 'stopped': return
                     if failure.permanent: raise failure
-                    repo.record_metric(run_id,result['id'],token,error=True)
+                    worker_repo.record_metric(run_id,result['id'],token,error=True)
+
+        # Runs created before the workspace setting existed use the default
+        # policy as a backwards-compatible upgrade; concurrency does not alter
+        # the frozen target, samples, or scoring evidence.
+        concurrency = max(1, min(10, int(evidence.get('budget', {}).get('evaluation_max_concurrent', 3))))
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix='evaluation-sample') as executor:
+            futures = [executor.submit(process_case, case) for case in run['cases']]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    cancelled.set()
+                    for pending in futures:
+                        pending.cancel()
+                    raise
     except Exception as error:
         failure = classified(error)
         if failure.code != 'stopped':
-            try: repo.abort_pending(run_id,token,failure.code)
+            try: worker_repo.abort_pending(run_id,token,failure.code)
             except HTTPException: pass
     finally:
         stopped.set()

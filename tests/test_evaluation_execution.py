@@ -1,5 +1,7 @@
 """SDK execution and durable-job acceptance with deterministic model fixtures."""
 import json
+import threading
+import time
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -64,6 +66,37 @@ class ExecutionTests(unittest.TestCase):
         self.assertIsNotNone(claim)
         run_evaluation(self.evaluations,claim,self.resolve)
         return self.evaluations.get(run['id'])
+
+    def test_evaluation_concurrency_is_frozen_from_workspace_settings(self):
+        self.store.save_system_settings({'evaluation_max_concurrent': 4})
+        prepared = self.prepare()
+        self.assertEqual(prepared['evidence']['budget']['evaluation_max_concurrent'], 4)
+
+    def test_samples_are_processed_concurrently_with_workspace_limit(self):
+        self.request.update(metrics=[], template='retrieve_only')
+        self.store.save_system_settings({'evaluation_max_concurrent': 3})
+        self.repo.add(self.dataset_id, [{'input': f'Question {index}', 'expected_output': 'Reference'} for index in range(4)])
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        def target(*_args, **_kwargs):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return {'actual_output': 'Answer', 'retrieval_context': None, 'retrieved_chunk_ids': None,
+                    'metadata': {}, 'duration_ms': 1, 'usage': {}}
+
+        with patch('backend.evaluation_execution.call_target', side_effect=target):
+            run = self.execute(self.prepare())
+        self.assertEqual(run['status'], 'completed')
+        self.assertEqual(len(run['cases']), 5)
+        self.assertGreaterEqual(peak, 2)
+        self.assertLessEqual(peak, 3)
 
     def test_retired_http_run_fails_without_resolving_or_calling_target(self):
         repo = unittest.mock.MagicMock()

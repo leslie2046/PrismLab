@@ -41,6 +41,9 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
             budget_values['max_requests'] = defaults.get('evaluation_max_requests', 500)
         if 'max_output_tokens' not in payload.budget.model_fields_set:
             budget_values['max_output_tokens'] = defaults.get('evaluation_max_output_tokens', 500000)
+        # Concurrency is a workspace policy, frozen into the run evidence so
+        # changing the setting never changes an evaluation already in flight.
+        budget_values['evaluation_max_concurrent'] = defaults.get('evaluation_max_concurrent', 3)
         request_values = payload.model_dump(mode='json', exclude={'evaluation_type'} if payload.evaluation_type is None else set())
         request_values['budget'] = budget_values
         request_hash = fingerprint(request_values)
