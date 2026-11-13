@@ -22,6 +22,7 @@ export const evaluationApi={
  version:(id:string)=>evaluationCall<Version>('dataset-versions/'+id),
  create:(value:EvaluationCreate)=>evaluationCall<Evaluation>('evaluation-runs','POST',value),
  start:(id:string)=>evaluationCall<Evaluation>(`evaluation-runs/${id}/start`,'POST'),
+ rerun:(id:string)=>evaluationCall<Evaluation>(`evaluation-runs/${id}/rerun`,'POST'),
  cancel:(id:string)=>evaluationCall<Evaluation>(`evaluation-runs/${id}/cancel`,'POST'),
  retry:(id:string)=>evaluationCall<Evaluation>(`evaluation-runs/${id}/retry-failed`,'POST'),
 };

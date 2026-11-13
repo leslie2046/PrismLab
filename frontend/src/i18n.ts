@@ -1003,6 +1003,7 @@ Object.assign(english, {
   "配置当前空间实际回答评测的默认模型、引擎与评分要求。": "Configure the default result judge, scoring engine and instructions for this workspace.",
   "配额（JSON：sources / chapters / topics / types）": "Quotas (JSON: sources / chapters / topics / types)",
   "重试失败项": "Retry failed items",
+  "重新评测": "Run evaluation again",
   "问题类型": "Question type",
   "需要": "Requires",
   "项已评分": "metrics scored",

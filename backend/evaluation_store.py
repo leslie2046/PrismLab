@@ -236,6 +236,54 @@ class EvaluationStore(EvaluationJobStore):
                 raise HTTPException(404, '数据集版本不存在')
             return json.loads(row['payload'])
 
+    def rerun(self, run_id):
+        """Create a fresh run from the original immutable sample and config snapshot."""
+        with self.store._session() as connection:
+            original_row = self._row(connection, run_id, lock=True)
+            original = json.loads(original_row['payload'])
+            evidence = json.loads(original_row['evidence'])
+            if original.get('execution_available') is not True:
+                raise HTTPException(409, '旧版评测记录不能重新评测，请新建评测')
+            version_row = connection.execute(
+                'SELECT payload FROM dataset_versions WHERE id=%s', (evidence['dataset_version_id'],)
+            ).fetchone()
+            if not version_row:
+                raise HTTPException(404, '评测数据集版本不存在')
+            version = json.loads(version_row['payload'])
+            samples = {sample['id']: sample for sample in version['samples']}
+            original_cases = self._children(connection, 'evaluation_cases', run_id)
+            sample_ids = [case['sample_id'] for case in original_cases if case['sample_id'] in samples]
+            if not sample_ids:
+                raise HTTPException(400, '原评测没有可重新评测的样本')
+
+            now, new_id = utc_now(), uuid.uuid4().hex
+            name = f"{original.get('name') or 'Quality evaluation'} · 重新评测"
+            request_key = f"rerun:{run_id}:{new_id}"
+            request_hash = fingerprint({'rerun_of': run_id, 'evidence': evidence, 'sample_ids': sample_ids})
+            run = {'id': new_id, 'created_at': now, 'updated_at': now, 'status': 'prepared',
+                   'attempt': 0, 'worker_token': None, 'error': None, 'case_count': len(sample_ids),
+                   'name': name, 'execution_available': True, 'queue_state': None, 'usage': {},
+                   'rerun_of': run_id}
+            connection.execute('INSERT INTO evaluation_runs VALUES (%s,%s,%s,%s,%s,%s,%s,%s)',
+                               (new_id, now, now, run['status'], request_key, request_hash,
+                                encoded(evidence), encoded(run)))
+            for sample_id in sample_ids:
+                case = {'id': uuid.uuid4().hex, 'run_id': new_id, 'sample_id': sample_id,
+                        'status': 'pending', 'observation': None, 'error': None, 'history': []}
+                connection.execute('INSERT INTO evaluation_cases VALUES (%s,%s,%s)',
+                                   (case['id'], new_id, encoded(case)))
+                sample = samples[sample_id]
+                for metric in evidence['metrics']:
+                    check = dependency_check(metric, sample)
+                    result = {'id': uuid.uuid4().hex, 'run_id': new_id, 'case_id': case['id'],
+                              'metric_id': metric['id'],
+                              'status': 'missing_data' if check['missing_fields'] else 'pending',
+                              'dependency': check, 'score': None, 'passed': None, 'reason': None,
+                              'error': None, 'usage': None, 'history': []}
+                    connection.execute('INSERT INTO metric_results VALUES (%s,%s,%s,%s)',
+                                       (result['id'], new_id, case['id'], encoded(result)))
+            return self._detail(connection, self._row(connection, new_id))
+
     def latest_summaries(self, dataset_ids):
         if not dataset_ids:
             return {}

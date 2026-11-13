@@ -103,6 +103,10 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
     def start(run_id: str):
         return public(repo().enqueue(run_id))
 
+    @router.post('/evaluation-runs/{run_id}/rerun', status_code=201)
+    def rerun(run_id: str):
+        return public(repo().rerun(run_id))
+
     @router.get('/evaluation-runs')
     def list_runs(limit: int = Query(50, ge=1, le=100), dataset_id: str | None = Query(None, min_length=1, max_length=128)):
         return {'items': [{k: v for k, v in item.items() if k != 'worker_token'} for item in repo().list(limit, dataset_id=dataset_id)]}

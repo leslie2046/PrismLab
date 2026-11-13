@@ -213,6 +213,19 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(all(m['score'] is None and m['passed'] is None and m['status'] == 'missing_data' for m in value['metric_results']))
         self.assertEqual(self.client.post(f"/api/evaluation-runs/{run['id']}/retry-failed").status_code, 409)
 
+    def test_rerun_creates_new_run_from_same_snapshot(self):
+        run = self.prepare()
+        response = self.client.post(f"/api/evaluation-runs/{run['id']}/rerun")
+        self.assertEqual(response.status_code, 201, response.text)
+        rerun = response.json()
+        self.assertNotEqual(rerun['id'], run['id'])
+        self.assertEqual(rerun['rerun_of'], run['id'])
+        self.assertEqual(rerun['evidence'], run['evidence'])
+        self.assertEqual(rerun['case_count'], run['case_count'])
+        self.assertEqual(rerun['status'], 'prepared')
+        self.assertTrue(all(case['status'] == 'pending' for case in rerun['cases']))
+        self.assertEqual(self.evaluations.get(run['id'])['status'], 'prepared')
+
     def test_target_and_judge_errors_retry_preserves_completed_and_history(self):
         run = self.prepare()
         token = self.evaluations.start(run['id'])

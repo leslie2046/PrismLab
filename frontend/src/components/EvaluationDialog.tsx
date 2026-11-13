@@ -88,14 +88,9 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
     && (m.engine === engine || m.engine === 'rules')
     && (template !== 'reference_free' || !m.required_fields.includes('expected_output'))
     && (evaluationType !== 'retrieval' || m.evaluation_types?.includes('retrieval')));
-  let recommended:string[] = [];
-  if (evaluationType === 'retrieval') {
-    recommended = engine === 'rules' ? ['rules.recall_at_k','rules.mrr','rules.ndcg'] : [`${engine}.context_precision`,`${engine}.context_recall`];
-  } else {
-    if (engine === 'deepeval') recommended = ['deepeval.answer_relevancy', ...(template === 'reference_qa' ? ['deepeval.reference_correctness'] : [])];
-    if (engine === 'ragas') recommended = template === 'reference_qa' ? ['ragas.answer_accuracy']
-      : benchmark === 'llm' ? [] : ['ragas.faithfulness'];
-  }
+  // Start with every metric currently valid for the selected type and engine;
+  // users can still opt out of individual metrics in Advanced settings.
+  const recommended = available.map(metric => metric.id);
   const effective = (chosen ?? recommended).filter(id => available.some(m => m.id === id));
   const needsJudge = effective.some(id => metrics.find(m => m.id === id)?.engine !== 'rules');
   const limit = scope === 'all' ? null : Number(scope === 'custom' ? customLimit : scope);
