@@ -9,11 +9,15 @@ import {WorkspaceDialog} from './WorkspaceDialog';
 import {SearchableSelect} from './SearchableSelect';
 import {SearchableMultiSelect} from './SearchableMultiSelect';
 import {InfoTip} from './InfoTip';
+import {recallLabel} from '../evaluationPresentation';
 import {evaluationTypeLabels, type EvaluationType} from '../evaluationTypes';
 
 export const metricNames:Record<string,string>={'deepeval.answer_relevancy':'回答相关性','deepeval.faithfulness':'回答忠实度','deepeval.reference_correctness':'参考答案正确性','deepeval.context_precision':'上下文精确率（有参考）','deepeval.context_recall':'上下文召回率（有参考）','ragas.faithfulness':'回答忠实度','ragas.context_recall':'上下文召回率（有参考）','ragas.context_precision':'上下文精确率（有参考）','ragas.context_precision_without_reference':'上下文精确率（无参考）','ragas.answer_accuracy':'事实正确性','rules.recall_at_k':'Recall@K','rules.mrr':'MRR','rules.ndcg':'nDCG','deepeval.custom':'自定义业务评分','rules.required_text':'必需短语','rules.json_schema':'JSON Schema'};
+export function metricName(metric:{id:string;k?:number}) {
+  return metric.id==='rules.recall_at_k'?recallLabel(metric.k):(metricNames[metric.id]||metric.id);
+}
 export const metricHelp:Record<string,string>={
-  'rules.recall_at_k':'前 K 个检索结果中命中的相关片段数 ÷ 标注的相关片段总数。',
+  'rules.recall_at_k':'前 K 个检索结果中命中的相关片段数 ÷ 标注的相关片段总数。单知识库的 K 读取自 Dify 配置，多知识库使用最终 Top K；创建评测时保存，实际返回不足 K 条也不改变 K。',
   'rules.mrr':'第一个相关片段出现位置的倒数。相关片段越早出现，分数越高；前 K 个结果没有命中时为 0。',
   'rules.ndcg':'根据相关性等级衡量排序质量。越相关的片段排在越前面，nDCG 越高。',
 };
@@ -29,7 +33,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
   catalog:Catalog|null; language:Language; onClose:()=>void; onCreated:(run:Evaluation)=>void;
 }) {
   const t = (text:string) => tr(language, text);
-  const key = useRef(''), lastPayload = useRef(''), advanced = useRef<HTMLDetailsElement>(null);
+  const key = useRef(''), lastPayload = useRef('');
   if (!key.current) key.current = createClientId();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [metrics, setMetrics] = useState<Metric[]>([]);
@@ -89,7 +93,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
     && (template !== 'reference_free' || !m.required_fields.includes('expected_output'))
     && (evaluationType !== 'retrieval' || m.evaluation_types?.includes('retrieval')));
   // Start with every metric currently valid for the selected type and engine;
-  // users can still opt out of individual metrics in Advanced settings.
+  // users can still opt out of individual metrics below.
   const recommended = available.map(metric => metric.id);
   const effective = (chosen ?? recommended).filter(id => available.some(m => m.id === id));
   const needsJudge = effective.some(id => metrics.find(m => m.id === id)?.engine !== 'rules');
@@ -139,7 +143,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             ...(multiRoute?{selections:knowledgeTargets.map(value=>JSON.parse(value) as LlmSelection),
               retrieval_reranker:reranker?JSON.parse(reranker):null,retrieval_candidate_top_k:candidateK,retrieval_score_threshold:scoreThreshold}:{})},
           scoring_engine:engine, judge:needsJudge && judge ? JSON.parse(judge) : null,
-          metrics:effective.map(id => ({id, ...(['rules.recall_at_k','rules.mrr','rules.ndcg'].includes(id)?{k:topK}:{}), threshold:thresholds[id] ?? metrics.find(m => m.id === id)?.threshold.default ?? .5,
+          metrics:effective.map(id => ({id, ...(['rules.mrr','rules.ndcg'].includes(id)?{k:topK}:{}), threshold:thresholds[id] ?? metrics.find(m => m.id === id)?.threshold.default ?? .5,
             ...(id === 'deepeval.custom' ? {criteria,examples} : {}),
             ...(id === 'rules.required_text' ? {required_text:phrases.split('\n').map(s => s.trim()).filter(Boolean)} : {}),
             ...(id === 'rules.json_schema' ? {json_schema:JSON.parse(schema)} : {}),
@@ -154,9 +158,6 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
         onCreated(await evaluationApi.start(run.id));
       } catch (error) { setError(errorText(error)); }
       finally { setBusy(false); }
-    }} onInvalidCapture={event => {
-      // Native validation must be able to focus required custom fields inside the collapsed section.
-      if (advanced.current?.contains(event.target as Node)) advanced.current.open = true;
     }}>
       <div className="workspace-dialog-body evaluation-setup-body">
         {loading && <p role="status">{t('加载中…')}</p>}
@@ -226,8 +227,8 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             </div>
             {loaded && !effective.length && <p className="evaluation-guidance" role="status">{t(
               engine === 'ragas' && template === 'reference_free' && benchmark === 'llm'
-                ? 'RAGAS 当前的无参考指标需要实际召回。可改用参考答案，或在高级设置中切换为 DeepEval。'
-                : '请在高级设置中选择适用的评分引擎和指标。')}</p>}
+                ? 'RAGAS 当前的无参考指标需要实际召回。可改用参考答案，或切换为 DeepEval。'
+                : '请选择适用的评分引擎和指标。')}</p>}
             <label className="field"><span className="label-with-tip">{t('结果评分引擎')}<InfoTip label={t('评分引擎说明')} text={t('选择用于计算本次评测指标的执行引擎。DeepEval 和 RAGAS 负责模型评分，确定性规则用于 Recall@K、MRR、nDCG 等可直接计算的指标。')}/></span>
               <select aria-label={t('结果评分引擎')} value={engine} onChange={e => {setEngine(e.target.value);setChosen(null);}}>
                 <option value="deepeval">DeepEval 4.3.2</option><option value="ragas">RAGAS 0.4.3</option><option value="rules">{t('确定性规则')}</option>
@@ -252,41 +253,36 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
               </label>}
             </div>
           </section>
-          <details ref={advanced} className="evaluation-advanced">
-            <summary>{t('高级设置')}<span>{t('指标、提示词与预算')}</span></summary>
-            <div className="evaluation-fields">
-              <div className="evaluation-evidence-grid">
-                <label className="field"><span>{t('评测名称')}</span><input value={name} placeholder={t('留空自动命名')} onChange={e => setName(e.target.value)} maxLength={120}/></label>
-              </div>
-              <fieldset className="evaluation-metrics"><legend>{t('选择指标')}</legend>
-                {available.map(metric => <div className="evaluation-metric-row" key={metric.id}>
-                  <label><input type="checkbox" checked={effective.includes(metric.id)} onChange={e => setChosen(e.target.checked ? [...effective,metric.id] : effective.filter(id => id !== metric.id))}/>
-                    <span><span className="label-with-tip">{t(metricNames[metric.id] || metric.id)}{metricHelp[metric.id] && <InfoTip label={t('指标说明')} text={t(metricHelp[metric.id])}/>}</span><small>{metric.engine} · {t('需要')} {metric.required_fields.map(field => t(fieldNames[field] || field)).join(', ')}</small></span>
-                  </label>
-                  {effective.includes(metric.id) && <label className="evaluation-threshold"><span>{t('通过阈值')} · {thresholds[metric.id] ?? metric.threshold.default}</span>
-                    <input type="range" aria-label={t(metricNames[metric.id] || metric.id)+' '+t('通过阈值')} min="0" max="1" step="0.05" value={thresholds[metric.id] ?? metric.threshold.default} onChange={e => setThresholds({...thresholds,[metric.id]:Number(e.target.value)})}/>
-                  </label>}
-                </div>)}
-                <button className="ghost" type="button" onClick={() => {setChosen(null);setThresholds({});}}>{t('恢复推荐指标')}</button>
-              </fieldset>
-              {effective.includes('deepeval.custom') && <>
-                <label className="field"><span>{t('业务评分规则')}</span><textarea required value={criteria} onChange={e => setCriteria(e.target.value)} maxLength={10000}/></label>
-                <button className="ghost" type="button" onClick={() => setCriteria(t('必须先给出明确结论，再列出依据；涉及未知信息时应说明不确定，禁止编造金额和日期。'))}>{t('填入规则示例')}</button>
-                <label className="field"><span>{t('评分示例 / Rubric')}</span><textarea value={examples} onChange={e => setExamples(e.target.value)} maxLength={10000}/></label>
-              </>}
-              {effective.includes('rules.required_text') && <label className="field"><span>{t('必需短语（每行一个）')}</span><textarea required value={phrases} onChange={e => setPhrases(e.target.value)}/></label>}
-              {effective.includes('rules.json_schema') && <label className="field"><span>JSON Schema</span><textarea required value={schema} onChange={e => setSchema(e.target.value)}/></label>}
-              {benchmark === 'llm' && <label className="field"><span>{t('目标系统提示词')}</span><textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={20000}/></label>}
-              <p className="field-help">{t('请求和 token 预算由空间设置统一管理。')}</p>
+          <div className="evaluation-fields">
+            <div className="evaluation-evidence-grid">
+              <label className="field"><span>{t('评测名称')}</span><input value={name} placeholder={t('留空自动命名')} onChange={e => setName(e.target.value)} maxLength={120}/></label>
             </div>
-          </details>
+            <fieldset className="evaluation-metrics"><legend>{t('选择指标')}</legend>
+              {available.map(metric => <div className="evaluation-metric-row" key={metric.id}>
+                <label><input type="checkbox" checked={effective.includes(metric.id)} onChange={e => setChosen(e.target.checked ? [...effective,metric.id] : effective.filter(id => id !== metric.id))}/>
+                  <span><span className="label-with-tip">{t(metricNames[metric.id] || metric.id)}{metricHelp[metric.id] && <InfoTip label={t('指标说明')} text={t(metricHelp[metric.id])}/>}</span><small>{metric.engine} · {t('需要')} {metric.required_fields.map(field => t(fieldNames[field] || field)).join(', ')}</small></span>
+                </label>
+                {effective.includes(metric.id) && <label className="evaluation-threshold"><span>{t('通过阈值')} · {thresholds[metric.id] ?? metric.threshold.default}</span>
+                  <input type="range" aria-label={t(metricNames[metric.id] || metric.id)+' '+t('通过阈值')} min="0" max="1" step="0.05" value={thresholds[metric.id] ?? metric.threshold.default} onChange={e => setThresholds({...thresholds,[metric.id]:Number(e.target.value)})}/>
+                </label>}
+              </div>)}
+              <button className="ghost" type="button" onClick={() => {setChosen(null);setThresholds({});}}>{t('恢复推荐指标')}</button>
+            </fieldset>
+            {effective.includes('deepeval.custom') && <>
+              <label className="field"><span>{t('业务评分规则')}</span><textarea required value={criteria} onChange={e => setCriteria(e.target.value)} maxLength={10000}/></label>
+              <button className="ghost" type="button" onClick={() => setCriteria(t('必须先给出明确结论，再列出依据；涉及未知信息时应说明不确定，禁止编造金额和日期。'))}>{t('填入规则示例')}</button>
+              <label className="field"><span>{t('评分示例 / Rubric')}</span><textarea value={examples} onChange={e => setExamples(e.target.value)} maxLength={10000}/></label>
+            </>}
+            {effective.includes('rules.required_text') && <label className="field"><span>{t('必需短语（每行一个）')}</span><textarea required value={phrases} onChange={e => setPhrases(e.target.value)}/></label>}
+            {effective.includes('rules.json_schema') && <label className="field"><span>JSON Schema</span><textarea required value={schema} onChange={e => setSchema(e.target.value)}/></label>}
+            {benchmark === 'llm' && <label className="field"><span>{t('目标系统提示词')}</span><textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={20000}/></label>}
+          </div>
         </fieldset>
         {error && <div className="alert" role="alert">{error}</div>}
         {!loaded && !loading && <button className="ghost" type="button" onClick={() => setReload(value => value+1)}>{t('重新加载')}</button>}
         {loaded && !compatibleDatasets.length && <p role="status">{t('请先创建或修改为对应用途或两者通用的数据集，并添加启用样本。')}</p>}
       </div>
       <footer className="evaluation-setup-footer">
-        <span>{t('自动保存数据快照，方便复现结果。')}</span>
         <div className="workspace-dialog-actions"><button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>
           <button className="primary" disabled={busy || !canSubmit}><Play aria-hidden="true"/>{buttonText}</button>
         </div>

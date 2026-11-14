@@ -8,7 +8,7 @@ export function useServerPagination<Item>(fetchPage: (page: number, size: number
     const timer = window.setTimeout(() => setSearch((filters.q || "").trim()), 250);
     return () => window.clearTimeout(timer);
   }, [filters.q]);
-  const key = JSON.stringify({ q: search, status: filters.status || "", benchmark: filters.benchmark || "", repeat_mode: filters.repeat_mode || "" });
+  const key = JSON.stringify({ q: search, status: filters.status || "", benchmark: filters.benchmark || "", repeat_mode: filters.repeat_mode || "", plan_id: filters.plan_id || "" });
   const [position, setPosition] = useState({ page: 1, pageSize: 10, key });
   const page = position.key === key ? position.page : 1;
   const pageSize = position.pageSize;

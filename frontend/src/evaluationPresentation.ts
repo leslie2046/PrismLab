@@ -1,4 +1,4 @@
-import type {CaseResult, Evaluation, MetricResult} from './evaluationApi';
+import type {CaseResult, Evaluation, EvaluationSummary, MetricResult} from './evaluationApi';
 
 export const evaluationLabels:Record<string,string> = {
   prepared:'已准备', running:'运行中', completed:'已完成', partial_failed:'部分失败', failed:'失败', cancelled:'已取消',
@@ -71,4 +71,19 @@ export function caseVerdict(item:CaseResult, results:MetricResult[], metricCount
   if (results.some(result=>hasScore(result) && result.passed===false)) return 'not_passed';
   if (metricCount && results.length===metricCount && results.every(result=>hasScore(result) && result.passed===true)) return 'passed';
   return item.status==='completed' && metricCount ? 'unscored' : item.status;
+}
+
+export function recallLabel(k?:number) {
+  return typeof k==='number' && Number.isInteger(k) && k>0 ? `Recall@${k}` : 'Recall@K';
+}
+
+export function resultColumns(runs:EvaluationSummary[]) {
+  const columns:Array<{id:string;k?:number;key:string}>=[];
+  const seen=new Set<string>();
+  for(const run of runs) for(const [id,summary] of Object.entries(run.summary?.metrics||{})) {
+    const k=id==='rules.recall_at_k'?summary.k:undefined;
+    const key=id==='rules.recall_at_k'?`${id}:${k??'unknown'}`:id;
+    if(!seen.has(key)){seen.add(key);columns.push({id,k,key})}
+  }
+  return columns;
 }

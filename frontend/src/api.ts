@@ -1,11 +1,11 @@
 import type { BulkResult, SelectionSnapshot } from './bulkSelection';
-import type { AiReport, AuthUser, Catalog, LlmParameters, LlmSelection, PlaygroundResult, Run, ServiceConfig, SystemSettings, TestPlan } from "./types";
+import type { AiReport, AuthUser, Catalog, LlmParameters, LlmSelection, PlaygroundResult, Run, RunPlanGroup, ServiceConfig, SystemSettings, TestPlan } from "./types";
 import type { PageResult } from "./pagination";
 
 export type ProviderAccess = { provider: string; server_url: string; api_key?: string; config_id?: string; credential_id?: string; benchmark?: string; model?: string };
 export type DiscoveredModel = { id: string; benchmark: string | null };
 export type ProviderBalance = { status: "available" | "unsupported" | "unconfigured" | "invalid_key" | "error"; balances: Array<{ currency: string | null; amount: string }>; checked_at?: string };
-export type ListFilters = { q?: string; status?: string; benchmark?: string; repeat_mode?: string };
+export type ListFilters = { q?: string; status?: string; benchmark?: string; repeat_mode?: string; plan_id?: string };
 
 function listQuery(page: number, size: number, filters: ListFilters) {
   const query = new URLSearchParams({ page: String(page), page_size: String(size) });
@@ -117,13 +117,13 @@ async function requestBulk(path: string, action: string, ids: string[]): Promise
   return result;
 }
 
-async function loadDashboardRuns(signal: AbortSignal): Promise<Run[]> {
+async function loadDashboardRuns(signal: AbortSignal, planId?: string): Promise<Run[]> {
   const activeWorkspace = workspaceId;
   const runs = new Map<string, Run>();
   for (let page = 1; ; page++) {
     // Never combine pages from different workspaces or return a partial history.
     if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
-    const result = await request<PageResult<Run>>(`/api/runs?${listQuery(page, 100, {})}`, { signal });
+    const result = await request<PageResult<Run>>(`/api/runs?${listQuery(page, 100, {plan_id: planId})}`, { signal });
     if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
     result.items.forEach(run => runs.set(run.id, run));
     if (page * result.page_size >= result.total || result.page < page) break;
@@ -153,7 +153,9 @@ export const api = {
   bulkPlans: (action: 'start' | 'pause' | 'stop' | 'delete', ids: string[]) => requestBulk('/api/plans/bulk', action, ids),
   bulkRuns: (action: 'cancel' | 'delete', ids: string[]) => requestBulk('/api/runs/bulk', action, ids),
   runs: () => request<Run[]>("/api/runs"),
+  run: (id: string, signal?: AbortSignal) => request<Run>(`/api/runs/${encodeURIComponent(id)}`, {signal}),
   dashboardRuns: loadDashboardRuns,
+  runPlanGroups: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<RunPlanGroup>>(`/api/run-plan-groups?${listQuery(page, size, filters)}`, { signal }),
   plans: () => request<TestPlan[]>("/api/plans"),
   runsPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<Run>>(`/api/runs?${listQuery(page, size, filters)}`, { signal }),
   plansPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<TestPlan>>(`/api/plans?${listQuery(page, size, filters)}`, { signal }),

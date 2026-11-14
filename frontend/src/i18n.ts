@@ -24,6 +24,10 @@ const english: Record<string, string> = {
   "每个知识库提供的候选片段上限，范围 1–100，不能小于最终 Top K。候选片段越多，重排请求越大。": "Maximum candidates from each knowledge base, from 1 to 100 and at least the final Top K. More candidates make reranking requests larger.",
   "最终 Top K": "Final Top K",
   "最终 Top K 说明": "About final Top K",
+  "K 来自 Dify 知识库配置": "K comes from the Dify knowledge base settings",
+  "K 来自多路召回的最终 Top K": "K comes from the final Top K of multi-route retrieval",
+  "K 为本次评测保存的固定值": "K is the fixed cutoff saved for this evaluation",
+  "前 K 个检索结果中命中的相关片段数 ÷ 标注的相关片段总数。单知识库的 K 读取自 Dify 配置，多知识库使用最终 Top K；创建评测时保存，实际返回不足 K 条也不改变 K。": "Relevant chunks found in the first K results divided by all labelled relevant chunks. K follows Dify settings for a single knowledge base, or the final Top K for multiple bases. It is saved when the evaluation is created, even when fewer than K results are returned.",
   "合并重排和阈值筛选后最多保留的结果数量，也用于 Recall@K、MRR 和 nDCG 的计算。": "Maximum results retained after merging, reranking and threshold filtering. This K is also used for Recall@K, MRR and nDCG.",
   "分数阈值（Score threshold）": "Score threshold",
   "分数阈值说明": "About the score threshold",
@@ -84,6 +88,11 @@ const english: Record<string, string> = {
   "进度更新失败，正在重新连接…": "Progress update failed. Reconnecting\u2026" ,
   "取消生成": "Cancel generation" ,
   "重新生成答案": "Regenerate answers" ,
+  "仅重新生成答案": "Regenerate answers only",
+  "开始重新生成答案": "Start regenerating answers",
+  "暂无可重新生成答案的样本。": "No samples available for answer regeneration.",
+  "使用已保存的生成模型和每条样本的参考上下文，重新生成参考答案。开始后会调用模型并产生费用。": "Use the saved generation model and each sample's reference context to regenerate reference answers. Starting will call the model and incur costs.",
+  "为全部已启用且有参考上下文的样本重新生成答案，覆盖已有答案；问题、上下文和来源保持不变。已归档或无参考上下文的样本会跳过，已完成的新答案会保留。": "Regenerate and replace answers for all active samples with reference context. Questions, contexts and sources stay unchanged. Archived samples and samples without reference context are skipped. Completed new answers are retained.",
   "确认重新生成": "Regenerate" ,
   "条样本的参考答案？": "sample reference answers?" ,
   "问题、上下文和来源不会改变。": "Questions, contexts and sources will not change." ,
@@ -1052,8 +1061,8 @@ Object.assign(english, {
   '尚未选择指标':'No metrics selected',
   '需要样本包含参考答案；缺失的样本将标为不可计算。':'Requires reference answers. Samples without them will be marked as not computable.',
   '需要应用返回实际召回内容；参考资料不能替代实际召回。':'Requires actual retrieved context from the application. Reference material cannot substitute for retrievals.',
-  'RAGAS 当前的无参考指标需要实际召回。可改用参考答案，或在高级设置中切换为 DeepEval。':'The available RAGAS metrics without references require actual retrievals. Use reference answers or switch to DeepEval in advanced settings.',
-  '请在高级设置中选择适用的评分引擎和指标。':'Select a compatible scoring engine and metrics in advanced settings.',
+  'RAGAS 当前的无参考指标需要实际召回。可改用参考答案，或切换为 DeepEval。':'The available RAGAS metrics without references require actual retrievals. Use reference answers or switch to DeepEval.',
+  '请选择适用的评分引擎和指标。':'Select a compatible scoring engine and metrics.',
   '评审模型':'Judge model',
   '评审模型说明':'About the judge model',
   '负责给被测对象的回答打分，默认沿用空间设置中的结果评分模型。不会自动使用被测模型。':'Scores the target’s answers using the workspace’s default result judge. The target model is never selected automatically as the judge.',
@@ -1290,4 +1299,14 @@ Object.assign(english, {
 
 Object.assign(english, {
   '围绕提供的知识资料生成常见问题，覆盖关键概念、适用条件和限制。': 'Generate common questions from the supplied sources, covering key concepts, conditions, and limitations.',
+});
+
+Object.assign(english, {
+  '按测试计划查看运行记录':'View runs grouped by test plan',
+  '搜索测试计划':'Search test plans',
+  '最近状态':'Latest status',
+  '全部运行记录':'All runs',
+  '计划运行记录':'Plan run history',
+  '运行结果':'Run results',
+  '所有测试计划':'All test plans',
 });

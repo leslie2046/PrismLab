@@ -689,7 +689,7 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
   const [prompt, setPrompt] = useState(config?.prompt || '');
   const [files, setFiles] = useState<File[]>([]);
   const [dify, setDify] = useState<string[]>([]);
-  const [buildMode, setBuildMode] = useState<'append' | 'replace_generated'>('append');
+  const [buildMode, setBuildMode] = useState<'append' | 'replace_generated' | 'regenerate_answers'>('append');
   const [settings, setSettings] = useState<DatasetSettings | null>(null);
   const [loading, setLoading] = useState(mode === 'config');
   const [purpose, setPurpose] = useState<DatasetPurpose>(dataset.evaluation_purpose || 'both');
@@ -702,6 +702,7 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
   const staleCritic = advanced.generation_backend === 'deepeval' && !!advanced.critic_llm && advanced.critic_llm !== 'generation' && !choices.some(choice => choice.value === advanced.critic_llm);
   const title = { config: '生成配置', documents: '导入文档', dify: '导入知识库来源', build: '重新构建' }[mode];
   const hasContexts = (sources?.items.length || 0) > 0;
+  const answersOnly = buildMode === 'regenerate_answers';
   const missingSource = method === 'contexts' ? !hasContexts : method === 'goldens' ? !dataset.item_count : !advanced.task.trim();
   useEffect(() => { if (retrievalOnly && method !== 'contexts') setMethod('contexts'); }, [retrievalOnly, method]);
   useEffect(() => {
@@ -727,6 +728,10 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
       } else if (mode === 'dify') {
         const form = new FormData(); dify.forEach(id => form.append('config_ids', id));
         value = await datasetApi.syncDify(dataset.id, form);
+      } else if (buildMode === 'regenerate_answers') {
+        const selection = await datasetApi.itemSelection(dataset.id, '');
+        if (!selection.ids.length) throw new Error(t('暂无可重新生成答案的样本。'));
+        value = await datasetApi.regenerateAnswers(dataset.id, selection.ids);
       } else value = await datasetApi.build(dataset.id, buildMode);
       onSaved(value);
     } catch (reason) { setError(message(reason)); } finally { setBusy(false); }
@@ -750,14 +755,20 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
       {!difyChoices.length && <p className="field-help">{t('暂无可用的 Dify 知识库，请先添加 Dify 配置。')}</p>}
     </>}
     {mode === 'build' && <>
-      <p className="field-help">{t('使用已保存的模型、生成参数和来源资料。开始后会调用模型并产生费用。')}</p>
-      <dl className="dataset-build-summary"><div><dt>{t('生成后端')}</dt><dd>{config?.generation_backend==='ragas_native' ? 'RAGAS' : 'DeepEval'}</dd></div><div><dt>{t('生成方式')}</dt><dd>{t({ contexts: '从已导入的资料生成', goldens: '扩写当前数据集', scratch: '按任务生成' }[method])}</dd></div><div><dt>{t('数据集生成模型')}</dt><dd>{config?.llm?.model || t('使用空间默认模型')}</dd></div>{config?.generation_backend === 'deepeval' && <div><dt>{t('质量评审模型')}</dt><dd>{config?.critic_llm?.model || t('使用空间质量评审模型')}</dd></div>}<div><dt>{t('每次生成数量')}</dt><dd>{size}</dd></div><div><dt>{t('已有数据')}</dt><dd>{dataset.item_count}</dd></div></dl>
-      <label className="field"><span>{t('构建方式')}</span><select aria-label={t('构建方式')} disabled={busy} value={buildMode} onChange={event => setBuildMode(event.target.value as typeof buildMode)}><option value="append">{t('追加生成（保留全部已有数据）')}</option><option value="replace_generated">{t('重新构建（替换 AI 生成数据）')}</option></select></label>
-      <p className={buildMode === 'replace_generated' ? 'dataset-feedback warning' : 'field-help'}>{t(buildMode === 'replace_generated' ? '新结果全部生成成功后，才替换原有 AI 生成数据。手工添加、文件导入、人工编辑过及无法确认来源的旧数据会保留；生成失败时原数据不变，重试会重新生成整批数据。' : '生成指定数量的新问答并追加到当前数据集。失败时保留已追加的数据，可继续构建。')}</p>
-      {missingSource && <p className="error-text" role="alert">{t('请先在生成配置中选择生成方式并填写任务，或导入文档、同步知识库、添加种子数据后再构建。')}</p>}
+      <p className="field-help">{t(answersOnly ? '使用已保存的生成模型和每条样本的参考上下文，重新生成参考答案。开始后会调用模型并产生费用。' : '使用已保存的模型、生成参数和来源资料。开始后会调用模型并产生费用。')}</p>
+      <dl className="dataset-build-summary">
+        {!answersOnly && <><div><dt>{t('生成后端')}</dt><dd>{config?.generation_backend==='ragas_native' ? 'RAGAS' : 'DeepEval'}</dd></div><div><dt>{t('生成方式')}</dt><dd>{t({ contexts: '从已导入的资料生成', goldens: '扩写当前数据集', scratch: '按任务生成' }[method])}</dd></div></>}
+        <div><dt>{t('数据集生成模型')}</dt><dd>{config?.llm?.model || t('使用空间默认模型')}</dd></div>
+        {!answersOnly && <>{config?.generation_backend === 'deepeval' && <div><dt>{t('质量评审模型')}</dt><dd>{config?.critic_llm?.model || t('使用空间质量评审模型')}</dd></div>}<div><dt>{t('每次生成数量')}</dt><dd>{size}</dd></div></>}
+        <div><dt>{t('已有数据')}</dt><dd>{dataset.item_count}</dd></div>
+      </dl>
+      <label className="field"><span>{t('构建方式')}</span><select aria-label={t('构建方式')} disabled={busy} value={buildMode} onChange={event => setBuildMode(event.target.value as typeof buildMode)}><option value="append">{t('追加生成（保留全部已有数据）')}</option><option value="replace_generated">{t('重新构建（替换 AI 生成数据）')}</option><option value="regenerate_answers">{t('仅重新生成答案')}</option></select></label>
+      <p className={buildMode === 'replace_generated' ? 'dataset-feedback warning' : 'field-help'}>{t(answersOnly ? '为全部已启用且有参考上下文的样本重新生成答案，覆盖已有答案；问题、上下文和来源保持不变。已归档或无参考上下文的样本会跳过，已完成的新答案会保留。' : buildMode === 'replace_generated' ? '新结果全部生成成功后，才替换原有 AI 生成数据。手工添加、文件导入、人工编辑过及无法确认来源的旧数据会保留；生成失败时原数据不变，重试会重新生成整批数据。' : '生成指定数量的新问答并追加到当前数据集。失败时保留已追加的数据，可继续构建。')}</p>
+      {!answersOnly && missingSource && <p className="error-text" role="alert">{t('请先在生成配置中选择生成方式并填写任务，或导入文档、同步知识库、添加种子数据后再构建。')}</p>}
     </>}
+    {mode === 'build' && answersOnly && !dataset.item_count && <p className="error-text" role="alert">{t('暂无可重新生成答案的样本。')}</p>}
     {error && <p className="error-text" role="alert">{error}</p>}
-  </div><div className="workspace-dialog-footer">{!embedded && <button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>}<button className="primary compact" disabled={dataset.status === 'generating' || busy || loading || (mode === 'config' && (staleLlm || staleCritic || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || !settings || (method === 'scratch' && !advanced.task.trim()))) || (mode === 'documents' && (!files.length || files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (mode === 'dify' && !dify.length) || (mode === 'build' && missingSource)}>{t(busy ? '提交中…' : mode === 'config' ? '保存配置' : mode === 'documents' ? '导入文档' : mode === 'dify' ? '导入来源' : buildMode === 'replace_generated' ? '开始重新构建' : '开始追加生成')}</button></div></form></SettingsContainer>;
+  </div><div className="workspace-dialog-footer">{!embedded && <button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>}<button className="primary compact" disabled={dataset.status === 'generating' || busy || loading || (mode === 'config' && (staleLlm || staleCritic || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || !settings || (method === 'scratch' && !advanced.task.trim()))) || (mode === 'documents' && (!files.length || files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (mode === 'dify' && !dify.length) || (mode === 'build' && (answersOnly ? !dataset.item_count : missingSource))}>{t(busy ? '提交中…' : mode === 'config' ? '保存配置' : mode === 'documents' ? '导入文档' : mode === 'dify' ? '导入来源' : answersOnly ? '开始重新生成答案' : buildMode === 'replace_generated' ? '开始重新构建' : '开始追加生成')}</button></div></form></SettingsContainer>;
 }
 
 function DatasetPurposeField({value,onChange,language,disabled}:{value:DatasetPurpose;onChange:(value:DatasetPurpose)=>void;language:Language;disabled:boolean}) {

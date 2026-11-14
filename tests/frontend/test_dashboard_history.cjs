@@ -35,5 +35,14 @@ const run = i => ({id:`run-${i}`, plan_id:i%2?'plan-a':'plan-b'});
   setWorkspaceId('team-history');pageCalls=0;
   global.fetch=async()=>{pageCalls++;return respond({items:[run(1),run(pageCalls+1)],total:101,page:pageCalls,page_size:100});};
   assert.equal((await api.dashboardRuns(new AbortController().signal)).length,3,'Deduplicates repeated IDs across pages');
-  console.log('Dashboard history pagination, failure, cancellation, workspace and deduplication checks passed');
+  pageCalls=0;
+  global.fetch=async(url)=>{
+    pageCalls++;
+    const params=new URL(url,'http://fixture').searchParams;
+    assert.equal(params.get('plan_id'),'plan &/a');
+    return respond({items:[run(pageCalls)],total:101,page:pageCalls,page_size:100});
+  };
+  assert.equal((await api.dashboardRuns(new AbortController().signal,'plan &/a')).length,2);
+  assert.equal(pageCalls,2,'Every history page retains the exact plan filter');
+  console.log('Dashboard history pagination, plan scope, failure, cancellation, workspace and deduplication checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>{global.fetch=originalFetch;setWorkspaceId(null);});

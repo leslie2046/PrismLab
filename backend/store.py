@@ -299,9 +299,13 @@ class RunStore:
 
     def _page(self, table: str, order_column: str, page: int, page_size: int, *,
               q: str = "", status: str | None = None, benchmark: str | None = None,
-              repeat_mode: str | None = None, ids_only: bool = False, evaluation_purpose: str | None = None) -> dict[str, Any]:
+              repeat_mode: str | None = None, ids_only: bool = False, evaluation_purpose: str | None = None,
+              plan_id: str | None = None) -> dict[str, Any]:
         conditions = []
         parameters: list[Any] = []
+        if plan_id is not None:
+            conditions.append(sql.SQL("payload::jsonb->>'plan_id' = %s"))
+            parameters.append(plan_id)
         if q.strip():
             conditions.append(sql.SQL("strpos(lower(concat_ws(' ', id, payload::jsonb->>'name', payload::jsonb->>'plan_id')), lower(%s)) > 0"))
             parameters.append(q.strip())
@@ -329,6 +333,40 @@ class RunStore:
 
     def runs_page(self, page: int, page_size: int, **filters) -> dict[str, Any]:
         return self._page("runs", "created_at", page, page_size, **filters)
+
+    def run_plan_groups_page(self, page: int, page_size: int, *, q="", status=None, benchmark=None):
+        # Group the complete history before filtering/pagination. Plan names may
+        # change or plans may be deleted; immutable plan IDs keep histories distinct.
+        base = """WITH ranked AS (
+            SELECT r.id, r.created_at, r.payload::jsonb AS run,
+                   NULLIF(r.payload::jsonb->>'plan_id', '') AS plan_id,
+                   COALESCE('plan:' || NULLIF(r.payload::jsonb->>'plan_id', ''), 'run:' || r.id) AS group_id,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE('plan:' || NULLIF(r.payload::jsonb->>'plan_id', ''), 'run:' || r.id)
+                                      ORDER BY r.created_at DESC, r.id DESC) AS position,
+                   COUNT(*) OVER (PARTITION BY COALESCE('plan:' || NULLIF(r.payload::jsonb->>'plan_id', ''), 'run:' || r.id)) AS run_count
+            FROM runs r
+        ), grouped AS (
+            SELECT ranked.*, COALESCE(NULLIF(p.payload::jsonb->>'name', ''), run->>'name', group_id) AS name
+            FROM ranked LEFT JOIN test_plans p ON p.id = ranked.plan_id WHERE position = 1
+        ) """
+        clauses, params = [], []
+        if q.strip():
+            clauses.append("strpos(lower(concat_ws(' ', name, plan_id)), lower(%s)) > 0")
+            params.append(q.strip())
+        for field, value in (("status", status), ("benchmark", benchmark)):
+            if value:
+                clauses.append("run->>%s = %s")
+                params.extend((field, value))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._session() as connection:
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            total = connection.execute(base + "SELECT COUNT(*) AS total FROM grouped" + where, params).fetchone()['total']
+            page = min(page, max(1, (total + page_size - 1) // page_size))
+            rows = connection.execute(base + "SELECT * FROM grouped" + where +
+                " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s", [*params, page_size, (page - 1) * page_size]).fetchall()
+        return {'items': [{'id': row['group_id'], 'plan_id': row['plan_id'], 'name': row['name'],
+                           'run_count': row['run_count'], 'latest_run': row['run']} for row in rows],
+                'total': total, 'page': page, 'page_size': page_size}
 
     def plans_page(self, page: int, page_size: int, **filters) -> dict[str, Any]:
         return self._page("test_plans", "created_at", page, page_size, **filters)

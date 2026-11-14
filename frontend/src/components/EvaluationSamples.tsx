@@ -4,7 +4,7 @@ import type {Evaluation,MetricResult,Version} from '../evaluationApi';
 import {tr,type Language} from '../i18n';
 import {caseVerdict,evaluationFailures,evaluationLabels,hasScore,scoringReasons} from '../evaluationPresentation';
 import {evaluationType} from '../evaluationTypes';
-import {metricNames} from './EvaluationDialog';
+import {metricName} from './EvaluationDialog';
 import {EvaluationStatus} from './EvaluationStatus';
 import {WorkspaceDialog} from './WorkspaceDialog';
 import {Pagination,usePagination} from './Pagination';
@@ -53,15 +53,14 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
     <div className="evaluation-sample-toolbar">
       <label className="evaluation-search"><Search aria-hidden="true"/><input aria-label={t('搜索样本问题')} placeholder={t('搜索样本问题')} value={query} onChange={event=>setQuery(event.target.value)}/></label>
       <label className="field"><span>{t('结果筛选')}</span><select aria-label={t('结果筛选')} value={filter} onChange={event=>setFilter(event.target.value)}>{[['all','全部'],['not_passed','未通过'],['failed','执行失败'],['missing_data','不可计算']].map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>
-      <label className="field"><span>{t('样本排序')}</span><select aria-label={t('样本排序')} value={sort} onChange={event=>setSort(event.target.value)}><option value="original">{t('原始顺序')}</option>{run.evidence.metrics.flatMap(metric=>['asc','desc'].map(direction=><option key={metric.id+direction} value={`${direction}|${metric.id}`}>{t(metricNames[metric.id]||metric.id)} · {t(direction==='asc'?'低分优先':'高分优先')}</option>))}</select></label>
+      <label className="field"><span>{t('样本排序')}</span><select aria-label={t('样本排序')} value={sort} onChange={event=>setSort(event.target.value)}><option value="original">{t('原始顺序')}</option>{run.evidence.metrics.flatMap(metric=>['asc','desc'].map(direction=><option key={metric.id+direction} value={`${direction}|${metric.id}`}>{t(metricName(metric))} · {t(direction==='asc'?'低分优先':'高分优先')}</option>))}</select></label>
     </div>
-    <div className="evaluation-table-scroll evaluation-sample-matrix" tabIndex={0} aria-label={t('样本指标得分表')}><table className="data-table"><thead><tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{t(metricNames[metric.id]||metric.id)}</th>)}<th scope="col">{t('耗时')}</th></tr></thead><tbody>{pageVisible.map(item=>{
+    <div className="evaluation-table-scroll evaluation-sample-matrix" tabIndex={0} aria-label={t('样本指标得分表')}><table className="data-table"><thead><tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{t(metricName(metric))}</th>)}<th scope="col">{t('耗时')}</th></tr></thead><tbody>{pageVisible.map(item=>{
       const scores=results.get(item.id),question=samples.get(item.sample_id)?.input||item.sample_id;
       return <tr key={item.id} data-case-id={item.id}><td><button className="evaluation-question" onClick={()=>setCaseId(item.id)} title={question}>{question}</button></td><td><EvaluationStatus status={caseVerdict(item,[...(scores?.values()||[])],run.evidence.metrics.length)} language={language}/></td>{run.evidence.metrics.map(metric=><td key={metric.id}><Score result={scores?.get(metric.id)} language={language}/></td>)}<td>{item.observation?.duration_ms==null?'—':`${item.observation.duration_ms.toLocaleString(language)} ms`}</td></tr>;
     })}</tbody></table></div>
     {visible.length>0&&<Pagination {...pagination} total={visible.length} language={language} label={t('样本')} pageSizes={[10,20,50]} />}
     {!visible.length&&<p className="dify-empty">{t('没有匹配的样本')}</p>}
-    <p className="evaluation-guidance evaluation-sample-hint">{t('点击问题查看评分理由、参考答案与召回内容。')}</p>
     {chosen&&<WorkspaceDialog title={t('样本详情')} busy={false} language={language} onClose={()=>setCaseId(null)} className="evaluation-sample-drawer">
       <div className="evaluation-drawer-nav"><EvaluationStatus status={caseVerdict(chosen,[...(results.get(chosen.id)?.values()||[])],run.evidence.metrics.length)} language={language}/><div><span>{position>=0?position+1:'—'} / {visible.length}</span><button className="ghost" disabled={position<=0} onClick={()=>setCaseId(visible[position-1].id)}><ArrowLeft/>{t('上一条')}</button><button className="ghost" disabled={position<0||position>=visible.length-1} onClick={()=>setCaseId(visible[position+1].id)}>{t('下一条')}<ArrowRight/></button></div></div>
       <div className="evaluation-drawer-content" ref={content}>
@@ -69,7 +68,7 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
         <section className="evaluation-sample-verdicts"><h3>{t('指标得分与理由')}</h3>{run.evidence.metrics.map(metric=>{
           const result=results.get(chosen.id)?.get(metric.id),threshold=metric.threshold?.value??metric.threshold?.default;
           const reasons=result?.reason?scoringReasons(result.reason):null;
-          return <article key={metric.id}><header><div><h4>{t(metricNames[metric.id]||metric.id)}</h4><small>{t('通过阈值')} {threshold==null?'—':`≥ ${threshold.toFixed(3)}`}</small></div><Score result={result} language={language}/></header>
+          return <article key={metric.id}><header><div><h4>{t(metricName(metric))}</h4><small>{t('通过阈值')} {threshold==null?'—':`≥ ${threshold.toFixed(3)}`}</small></div><Score result={result} language={language}/></header>
             {result?.usage?.cache_hit&&<small>{t('已复用评分')}</small>}
             {result?.reason?(reasons?<><ul className="evaluation-reasons">{reasons.map((reason,index)=><li key={index}>{reason}</li>)}</ul><details><summary>{t('原始评分信息')}</summary><pre>{result.reason}</pre></details></>:<pre className="evaluation-reason">{result.reason}</pre>):result?.error?<p role="alert">{t(evaluationFailures[result.error]||result.error)}</p>:<p className="evaluation-guidance">{result?.dependency?.missing_fields?.length?`${t('缺少数据')}: ${result.dependency.missing_fields.join(', ')}`:result?.dependency?.awaiting_fields?.length?`${t('等待中')}: ${result.dependency.awaiting_fields.join(', ')}`:t(result?.status==='completed'?'未提供评分理由':'等待评分结果')}</p>}
           </article>;

@@ -65,8 +65,9 @@ function ResultChart({ runs, metric, concurrency, trend, language, dark }: { run
   return <div ref={element} className="dashboard-trend-chart" role="img" aria-label={tr(language, trend ? "历史运行趋势" : "并发性能对比")} />;
 }
 
-export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, initialPlanId, initialRunId, onSelectRun }: {
+export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, initialPlanId, initialRunId, onSelectRun, fixedPlanId, singleRun, embedded = false }: {
   plans: TestPlan[]; runs: Run[]; language: Language; dark: boolean; initialPlanId: string | null; initialRunId: string | null; onSelectRun: (run: Run) => void;
+  fixedPlanId?: string; singleRun?: Run; embedded?: boolean;
 }) {
   const t = (value: string) => tr(language, value);
   const [snapshot, setSnapshot] = useState<{ runs: Run[]; startedAt: number } | null>(null);
@@ -75,25 +76,31 @@ export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, ini
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   useEffect(() => {
+    if (singleRun) {
+      setSnapshot({runs: [{...singleRun, plan_id: singleRun.plan_id || singleRun.id}], startedAt: Date.now()});
+      setLoading(false); setError(''); return;
+    }
     const controller = new AbortController();
     const startedAt = Date.now();
     setLoading(true); setError('');
-    api.dashboardRuns(controller.signal).then(value => {
+    api.dashboardRuns(controller.signal, fixedPlanId).then(value => {
       if (!controller.signal.aborted) setSnapshot({ runs: value, startedAt });
     }).catch(reason => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [revision]);
+  }, [revision, fixedPlanId, singleRun?.id, singleRun?.updated_at]);
   const runs = useMemo(() => {
     if (history === null) return [];
+    if (singleRun) return [{...singleRun, plan_id: singleRun.plan_id || singleRun.id}];
     const merged = new Map(history.map(run => [run.id, run]));
     for (const run of recentRuns) {
+      if (fixedPlanId && run.plan_id !== fixedPlanId) continue;
       const saved = merged.get(run.id);
       if ((!saved && Date.parse(run.created_at) >= snapshot!.startedAt) || (saved && run.updated_at > saved.updated_at)) merged.set(run.id, run);
     }
     return [...merged.values()];
-  }, [history, recentRuns, snapshot]);
+  }, [history, recentRuns, snapshot, fixedPlanId, singleRun]);
   const planChoices = [...new Set(runs.map((run) => run.plan_id))].map((id) => ({ id, name: plans.find((plan) => plan.id === id)?.name || runs.find((run) => run.plan_id === id)?.name || id, count: runs.filter((run) => run.plan_id === id).length }));
   const richestPlanId = [...planChoices].sort((a, b) => b.count - a.count)[0]?.id || "";
   const [planId, setPlanId] = useState(initialPlanId || richestPlanId);
@@ -121,12 +128,12 @@ export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, ini
   const completed = planRuns.filter((run) => run.status === "completed").length;
   const failed = planRuns.filter((run) => run.status === "failed").length;
   return <div className="dashboard-page">
-    <PageHeader icon={LineChartIcon} title={t('分析看板')} description={t('对比模型在不同负载下的表现，跟踪每次运行的变化。')} actions={<button type="button" className="ghost" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button>} />
+    {!embedded && <PageHeader icon={LineChartIcon} title={t('分析看板')} description={t('对比模型在不同负载下的表现，跟踪每次运行的变化。')} actions={<button type="button" className="ghost" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button>} />}
     {loading && <p className="pagination-feedback" role="status">{t('正在加载完整运行记录…')}</p>}
     {error && <div className="pagination-feedback error-text" role="alert">{t('运行记录加载失败，请重试。')} <span>{error}</span><button type="button" className="ghost" onClick={() => setRevision(value => value + 1)}>{t('重试')}</button></div>}
     {history !== null && <>
     <section className="dashboard-toolbar">
-      <label className="field"><span>{t("测试计划")}</span><select value={planId} disabled={!planChoices.length} onChange={(event) => { setPlanId(event.target.value); setComparisonRunId(""); setSelectedLevel(null); }}>{planChoices.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.count} {t("次")} · {plan.id.slice(-6)}</option>)}</select></label>
+      {!embedded && <label className="field"><span>{t("测试计划")}</span><select value={planId} disabled={!planChoices.length} onChange={(event) => { setPlanId(event.target.value); setComparisonRunId(""); setSelectedLevel(null); }}>{planChoices.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {plan.count} {t("次")} · {plan.id.slice(-6)}</option>)}</select></label>}
       <div className="dashboard-view-switch" aria-label={t("看板视图")}>
         {(["comparison", "trend", "stability"] as View[]).map((item) => <button key={item} aria-pressed={view === item} className={view === item ? "active" : ""} onClick={() => setView(item)}>{item === "comparison" ? <GitCompareArrows aria-hidden="true" /> : item === "trend" ? <LineChartIcon aria-hidden="true" /> : <ShieldCheck aria-hidden="true" />}{t(item === "comparison" ? "并发性能对比" : item === "trend" ? "历史运行趋势" : "稳定性")}</button>)}
       </div>

@@ -48,3 +48,13 @@ const previous={evidence:{metrics:[{threshold:{value:.7,default:.5},id:metric.id
 assert.deepEqual(comparisonDifferences(current,previous),[],'Object key order and sample order do not create false incompatibility reasons');
 assert.deepEqual(comparisonDifferences(current,{...previous,evidence:{...previous.evidence,result_judge:{model:'judge',prompt:'B'}},cases:[{sample_id:'a'}]}),['评分模型或评分提示词不同','参与评测的问题范围不同']);
 console.log('Evaluation comparison: paired means, real zero, missing/error exclusion, incompatible conditions and readable changes passed');
+
+const {recallLabel,resultColumns}=require(path.resolve(process.argv[2],'evaluationPresentation.js'));
+assert.equal(recallLabel(10),'Recall@10');assert.equal(recallLabel(5),'Recall@5');assert.equal(recallLabel(undefined),'Recall@K');
+const recallRun=k=>({summary:{metrics:{'rules.recall_at_k':{mean:.5,k},'rules.mrr':{mean:.8}}}});
+assert.deepEqual(resultColumns([recallRun(10),recallRun(5),recallRun(10)]),[
+ {id:'rules.recall_at_k',k:10,key:'rules.recall_at_k:10'},
+ {id:'rules.mrr',k:undefined,key:'rules.mrr'},
+ {id:'rules.recall_at_k',k:5,key:'rules.recall_at_k:5'},
+]);
+console.log('Recall labels and distinct columns preserve configured K and separate historical cutoffs');

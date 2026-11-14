@@ -236,12 +236,16 @@ class EvaluationStore(EvaluationJobStore):
                 raise HTTPException(404, '数据集版本不存在')
             return json.loads(row['payload'])
 
-    def rerun(self, run_id):
-        """Create a fresh run from the original immutable sample and config snapshot."""
+    def rerun(self, run_id, *, recall_cutoff=None):
+        """Reuse frozen samples and config, refreshing Dify's Recall@K cutoff when supplied."""
         with self.store._session() as connection:
             original_row = self._row(connection, run_id, lock=True)
             original = json.loads(original_row['payload'])
             evidence = json.loads(original_row['evidence'])
+            if recall_cutoff:
+                for metric in evidence['metrics']:
+                    if metric['id'] == 'rules.recall_at_k':
+                        metric.update(recall_cutoff)
             if original.get('execution_available') is not True:
                 raise HTTPException(409, '旧版评测记录不能重新评测，请新建评测')
             version_row = connection.execute(

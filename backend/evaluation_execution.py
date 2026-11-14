@@ -246,7 +246,7 @@ def score_rule(metric, sample, observation):
     retrieved = list(dict.fromkeys(observation.get('retrieved_chunk_ids') or []))[:metric['k']]
     relevant = set(annotations.get('relevant_chunk_ids', []))
     if metric['id'] == 'rules.recall_at_k':
-        return len(relevant.intersection(retrieved))/len(relevant), f'{len(relevant.intersection(retrieved))}/{len(relevant)} annotated relevant chunks retrieved'
+        return len(relevant.intersection(retrieved))/len(relevant), f"Recall@{metric['k']}: {len(relevant.intersection(retrieved))}/{len(relevant)} annotated relevant chunks retrieved (returned {len(observation.get('retrieved_chunk_ids') or [])} chunks)"
     if metric['id'] == 'rules.mrr':
         rank = next((i+1 for i,v in enumerate(retrieved) if v in relevant), None)
         return (1/rank if rank else 0.0), f'First relevant rank: {rank}'

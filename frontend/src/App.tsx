@@ -32,6 +32,7 @@ import { Datasets } from "./components/Datasets";
 import { Evaluations } from "./components/Evaluations";
 import { SystemSettings } from "./components/SystemSettings";
 import { RunAiReport } from "./components/RunAiReport";
+import { RunHistory } from "./components/RunHistory";
 import { ProviderLogo } from "./components/ProviderLogo";
 import { providerDisplayName } from "./providerPresets";
 import { tr, type Language } from "./i18n";
@@ -118,7 +119,6 @@ export default function App() {
   const difyTriggerRef = useRef<HTMLElement | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [planFilters, setPlanFilters] = useState<ListFilters>({});
-  const [runFilters, setRunFilters] = useState<ListFilters>({});
   const [difySearch, setDifySearch] = useState("");
   const [difyType, setDifyType] = useState("");
 
@@ -130,15 +130,10 @@ export default function App() {
     && `${config.name} ${config.id} ${config.base_url || ""} ${config.dataset_id || ""} ${config.models.map(model => model.base_url || "").join(" ")}`.toLocaleLowerCase().includes(difySearch.trim().toLocaleLowerCase()));
   const difyPagination = usePagination(difyConfigs.length, JSON.stringify([difySearch, difyType]), 15);
   const planPagination = useServerPagination(api.plansPage, activeTab === "new-run", listRevision, planFilters);
-  const runPagination = useServerPagination(api.runsPage, activeTab === "history", listRevision, runFilters);
   const planSelection = useBulkSelection(JSON.stringify([activeTab, planFilters]));
-  const runSelection = useBulkSelection(JSON.stringify([activeTab, runFilters]));
   const planPageIds = planPagination.items.map(value => value.id);
-  const runPageIds = runPagination.items.map(value => value.id);
   const planSelectionDisabled = planPagination.loading || !!planPagination.error || !!planActionId || submitting;
-  const runSelectionDisabled = runPagination.loading || !!runPagination.error;
   const planFiltered = Boolean(planFilters.q?.trim() || planFilters.status || planFilters.benchmark || planFilters.repeat_mode);
-  const runFiltered = Boolean(runFilters.q?.trim() || runFilters.status || runFilters.benchmark);
   const typeOptions = [{ value: "llm", label: "LLM" }, { value: "embedding", label: "Embedding" }, { value: "reranker", label: "Reranker" }, { value: "audio", label: "Audio" }, { value: "dify-retrieve", label: "Dify Retrieve" }, { value: "dify-chat", label: "Dify Chat" }];
   const statusOptions = (statuses: string[]) => statuses.map(value => ({ value, label: t(STATUS_LABELS[value]) }));
   const hasLiveActivity = plans.some((plan) => plan.status === "active") || runs.some((run) => !TERMINAL.has(run.status));
@@ -402,21 +397,6 @@ export default function App() {
     return plan.repeat_mode === "forever" ? `${t("一直重复")} · ${t("每隔")} ${interval}` : `${t("共运行")} ${plan.repeat_count} ${t("次")} · ${t("每隔")} ${interval}`;
   }
 
-  async function deleteRun(run: Run) {
-    if (!window.confirm(`${t("删除运行记录")} “${run.name}”? ${t("此操作无法撤销。")}`)) return;
-    try {
-      await api.deleteRun(run.id);
-      setListRevision(value => value + 1);
-      if (openedRun?.id === run.id) setOpenedRun(null);
-      const remaining = runs.filter((item) => item.id !== run.id);
-      setRuns(remaining);
-      if (selectedId === run.id) setSelectedId(remaining[0]?.id ?? null);
-      setMessage(t("运行记录已删除。"));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : t("删除运行记录失败"));
-    }
-  }
-
   function refreshAfterBulk(result: BulkResult) {
     setListRevision(value => value + 1);
     void Promise.all([api.plans(), api.runs()]).then(([nextPlans, nextRuns]) => {
@@ -431,11 +411,6 @@ export default function App() {
     const labels = { start: '批量开始', pause: '批量暂停', stop: '批量停止', delete: '批量删除' };
     if (action !== 'pause' && !window.confirm(`${t(labels[action])} ${planSelection.ids.size} ${t('条记录')}？ ${t(descriptions[action])}`)) return;
     void planSelection.execute(ids => api.bulkPlans(action, ids), refreshAfterBulk);
-  }
-
-  function bulkRuns(action: 'cancel' | 'delete') {
-    if (!window.confirm(`${t(action === 'cancel' ? '批量取消运行' : '批量删除')} ${runSelection.ids.size} ${t('条记录')}？ ${t(action === 'cancel' ? '仅取消排队中或运行中的任务。' : '仅删除已结束的运行及其报告，此操作无法撤销。')}`)) return;
-    void runSelection.execute(ids => api.bulkRuns(action, ids), refreshAfterBulk);
   }
 
   async function deleteServiceConfig(config: ServiceConfig) {
@@ -603,20 +578,7 @@ export default function App() {
 
         {activeTab === "dashboard" && <AnalysisDashboard plans={plans} runs={dashboardRuns} language={language} dark={resolvedDark} initialPlanId={dashboardPlanId} initialRunId={dashboardPlanId === selected?.plan_id ? selected?.id || null : null} onSelectRun={run => { setOpenedRun(run); setSelectedId(run.id); }} />}
 
-        {activeTab === "history" && <section className="panel history">
-          <PageHeader icon={History} title={t('运行记录')} count={runPagination.total} description={t('检查并管理所有性能测试运行')} />
-          <ListToolbar language={language} search={runFilters.q || ""} onSearch={q => setRunFilters(current => ({ ...current, q }))} searchLabel={t("搜索运行名称、运行或计划 ID")} onReset={() => setRunFilters({})} filters={[
-            { label: t("状态"), value: runFilters.status || "", onChange: status => setRunFilters(current => ({ ...current, status })), options: statusOptions(["queued", "running", "completed", "failed", "cancelled"]) },
-            { label: t("测试类型"), value: runFilters.benchmark || "", onChange: benchmark => setRunFilters(current => ({ ...current, benchmark })), options: typeOptions },
-          ]} />
-          <BulkSelectionBar selection={runSelection} language={language}>
-            <button type="button" className="ghost" disabled={runSelectionDisabled || runSelection.busy} onClick={() => bulkRuns('cancel')}><Square aria-hidden="true" />{t('批量取消运行')}</button>
-            <button type="button" className="ghost danger" disabled={!auth.canManage || runSelectionDisabled || runSelection.busy} onClick={() => bulkRuns('delete')}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
-          </BulkSelectionBar>
-          <div className="table-scroll"><table><thead><tr><th className="selection-cell"><SelectionCheckbox label={t("全选当前页")} checked={runPageIds.length > 0 && runPageIds.every(id => runSelection.ids.has(id))} mixed={runPageIds.some(id => runSelection.ids.has(id)) && !runPageIds.every(id => runSelection.ids.has(id))} disabled={runSelectionDisabled || runSelection.busy || !runPageIds.length} onChange={checked => runSelection.toggle(runPageIds, checked)} /></th><th>{t("状态")}</th><th>{t("测试计划")}</th><th>{t("类型")}</th><th><span className="label-with-tip">{t("进度")}<InfoTip label={t("查看说明")} text={t("已完成场景数与全部场景数的比值。")}/></span></th><th>{t("运行时间")}</th><th>{t("操作")}</th></tr></thead><tbody>{runPagination.items.map((run) => <tr className={[selected?.id === run.id ? "selected" : "", runSelection.ids.has(run.id) ? "bulk-selected" : ""].join(" ")} onClick={() => openRunAnalysis(run)} key={run.id}><td className="selection-cell"><SelectionCheckbox label={`${t("选择记录")} ${run.id}`} checked={runSelection.ids.has(run.id)} disabled={runSelectionDisabled || runSelection.busy} onChange={checked => runSelection.toggle([run.id], checked)} /></td><td><Status value={run.status} language={language} /></td><td><strong>{run.name}</strong><small>{run.id}</small></td><td>{run.benchmark}</td><td>{run.completed_scenarios} / {run.total_scenarios}</td><td>{run.started_at ? <time dateTime={run.started_at} title={new Date(run.started_at).toLocaleString(language)}>{formatTime(run.started_at, language)}</time> : "—"}</td><td><div className="row-actions"><button type="button" className="ghost ai-report-trigger" disabled={!TERMINAL.has(run.status)} title={t("运行结束后可手动生成 AI 报告")} onClick={(event) => { event.stopPropagation(); setAnalysisRun(run); }}><Sparkles aria-hidden="true" />{t("AI 报告")}</button><button type="button" className="icon-button danger" aria-label={t("删除")} disabled={!auth.canManage || runSelection.busy || !TERMINAL.has(run.status)} onClick={(event) => { event.stopPropagation(); void deleteRun(run); }}><Trash2 aria-hidden="true" /></button></div></td></tr>)}</tbody></table>{!runPagination.loading && !runPagination.error && !runPagination.total && <EmptyState icon={History} title={t(runFiltered ? "没有匹配的记录，请调整搜索或筛选条件。" : "暂无运行记录")} />}</div>
-            <PageFeedback state={runPagination} language={language} />
-            <Pagination {...runPagination} total={runPagination.total} language={language} label={t("运行记录")} disabled={runPagination.loading || runSelection.busy} />
-        </section>}
+        {activeTab === "history" && <RunHistory plans={plans} runs={dashboardRuns} language={language} dark={resolvedDark} canManage={auth.canManage} revision={listRevision} onSelectRun={run => {setOpenedRun(run);setSelectedId(run.id)}} onReport={setAnalysisRun} onChanged={() => setListRevision(value => value+1)}/>}
 
         {activeTab === "settings" && <ProviderManager configs={serviceConfigs} configurationState={serviceConfigsState} benchmarks={catalog?.benchmarks || []} language={language} readOnly={!auth.canManage} onChanged={async () => { const [nextConfigs, nextCatalog] = await Promise.all([api.serviceConfigs(), api.catalog()]); setServiceConfigs(nextConfigs); setServiceConfigsState("ready"); setCatalog(nextCatalog); }} />}
         {activeTab === "dify" && <section className="dify-settings">

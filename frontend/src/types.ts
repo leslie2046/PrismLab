@@ -97,6 +97,8 @@ export type Run = {
   error: string | null;
 };
 
+export type RunPlanGroup = { id: string; plan_id: string | null; name: string; run_count: number; latest_run: Run };
+
 export type TestPlan = {
   max_tokens?: number;
   dataset_id?: string | null;

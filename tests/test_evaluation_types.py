@@ -12,7 +12,11 @@ from tests import test_evaluation_execution as execution_fixtures
 
 
 class EvaluationTypeTests(unittest.TestCase):
-    setUp = fixtures.EvaluationTests.setUp
+    def setUp(self):
+        fixtures.EvaluationTests.setUp(self)
+        cutoff = patch('backend.evaluation_recall.read_dify_top_k', return_value=2)
+        cutoff.start()
+        self.addCleanup(cutoff.stop)
     prepare = fixtures.EvaluationTests.prepare
     execute = execution_fixtures.ExecutionTests.execute
 

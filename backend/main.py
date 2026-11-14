@@ -899,6 +899,15 @@ async def run_plan(plan_id: str) -> dict:
     return run
 
 
+@app.get("/api/run-plan-groups")
+def list_run_plan_groups(page: int = Query(1, ge=1, le=1000000000),
+                         page_size: int = Query(10, ge=1, le=100),
+                         q: str = Query('', max_length=200),
+                         status: Literal["queued", "running", "completed", "failed", "cancelled"] | None = None,
+                         benchmark: BenchmarkKind | None = None):
+    return store.run_plan_groups_page(page, page_size, q=q, status=status, benchmark=benchmark)
+
+
 @app.get("/api/runs")
 def list_runs(
     limit: int = Query(default=30, ge=1, le=200),
@@ -907,10 +916,11 @@ def list_runs(
     q: str = Query(default="", max_length=200),
     status: Literal["queued", "running", "completed", "failed", "cancelled"] | None = None,
     benchmark: BenchmarkKind | None = None,
+    plan_id: str | None = Query(default=None, min_length=1, max_length=128),
 ) -> list[dict] | dict:
-    if page is not None or q or status or benchmark:
+    if page is not None or q or status or benchmark or plan_id is not None:
         result = store.runs_page(page or 1, page_size if page is not None else limit,
-                                 q=q, status=status, benchmark=benchmark)
+                                 q=q, status=status, benchmark=benchmark, plan_id=plan_id)
         return result if page is not None else result["items"]
     return store.list(limit)
 

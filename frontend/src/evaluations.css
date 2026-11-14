@@ -45,18 +45,12 @@
 .evaluation-plan > span,.evaluation-plan small { font-size:11px; color:var(--muted-foreground); }
 .evaluation-plan strong { font-size:12px; font-weight:500; }
 .evaluation-guidance { margin:0; font-size:12px; color:var(--muted-foreground); line-height:1.6; }
-.evaluation-advanced { border-top:1px solid var(--border); min-width:0; }
-.evaluation-advanced > summary { padding:14px 0 0; cursor:pointer; font-size:12px; font-weight:600; }
-.evaluation-advanced > summary > span { margin-left:10px; color:var(--muted-foreground); font-weight:400; font-size:11px; }
-.evaluation-advanced > .evaluation-fields { padding-top:16px; }
-.evaluation-setup-footer { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 20px; border-top:1px solid var(--border); background:var(--surface); flex-shrink:0; }
-.evaluation-setup-footer > span { font-size:11px; color:var(--muted-foreground); }
+.evaluation-setup-footer { display:flex; justify-content:flex-end; align-items:center; gap:12px; padding:12px 20px; border-top:1px solid var(--border); background:var(--surface); flex-shrink:0; }
 @media(max-width:600px) {
   .evaluation-target-fields { grid-template-columns:1fr; }
   .evaluation-setup-footer { flex-wrap:wrap; }
   .evaluation-setup-footer .workspace-dialog-actions { width:100%; }
   .evaluation-setup-footer .primary { flex:1; justify-content:center; }
-  .evaluation-advanced > summary > span { display:block; margin:6px 0 0 16px; }
   .evaluation-metrics .evaluation-threshold { grid-template-columns:1fr; gap:6px; }
 }
 
@@ -171,7 +165,6 @@
 .evaluation-cell-score[data-tone="failure"] { color:var(--destructive); }
 .evaluation-cell-unscored { color:var(--muted-foreground); }
 .evaluation-panel .evaluation-cell-score small,.evaluation-panel .evaluation-cell-unscored small { margin-top:2px; font-weight:400; font-size:10px; }
-.evaluation-sample-hint { margin-top:10px; }
 .workspace-dialog.evaluation-sample-drawer { position:fixed; inset:0 0 0 auto; margin:0; width:min(760px,100vw); max-width:100vw; height:100dvh; max-height:100dvh; padding:0; border-width:0 0 0 1px; border-radius:0; }
 .workspace-dialog.evaluation-sample-drawer[open] { display:flex; flex-direction:column; }
 .evaluation-sample-drawer .workspace-dialog-head { padding:16px 20px; flex:none; }

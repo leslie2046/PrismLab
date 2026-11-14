@@ -7,9 +7,9 @@ import {useAuth} from '../auth';
 import {downloadBlob} from '../datasetApi';
 import {evaluationApi,type Evaluation,type EvaluationSummary,type Version} from '../evaluationApi';
 import {evaluationType,evaluationSummaryType,evaluationTypeLabels} from '../evaluationTypes';
-import {evaluationFailures,evaluationLabels} from '../evaluationPresentation';
+import {evaluationFailures,evaluationLabels,resultColumns} from '../evaluationPresentation';
 import {WorkspaceDialog} from './WorkspaceDialog';
-import {EvaluationDialog,metricNames} from './EvaluationDialog';
+import {EvaluationDialog,metricName} from './EvaluationDialog';
 import {EvaluationScores} from './EvaluationScores';
 import {EvaluationSamples} from './EvaluationSamples';
 import {EvaluationStatus} from './EvaluationStatus';
@@ -23,22 +23,18 @@ type Tab=typeof tabs[number][0];
 
 function EvaluationResultsVisualization({runs,language,onOpen,deleteAction,canManage}:{runs:EvaluationSummary[];language:Language;onOpen:(id:string)=>void;deleteAction:(run:EvaluationSummary)=>ReactNode;canManage:boolean}) {
   const t=(text:string)=>tr(language,text);
-  const metricIds=useMemo(()=>{
-    const ids:string[]=[];const seen=new Set<string>();
-    runs.forEach(run=>Object.keys(run.summary?.metrics||{}).forEach(id=>{if(!seen.has(id)){seen.add(id);ids.push(id)}}));
-    return ids;
-  },[runs]);
+  const metrics=useMemo(()=>resultColumns(runs),[runs]);
   if(!runs.length)return null;
-  const columns=`minmax(250px,1.35fr) repeat(${metricIds.length},minmax(150px,1fr))${canManage?' 44px':''}`;
+  const columns=`minmax(250px,1.35fr) repeat(${metrics.length},minmax(150px,1fr))${canManage?' 44px':''}`;
   return <section className="evaluation-results-visualization" aria-labelledby="evaluation-results-visualization-title">
     <div className="evaluation-results-visualization-head"><div><h2 id="evaluation-results-visualization-title">{t('评测结果可视化')}</h2><p>{t('汇总当前筛选结果的指标均分，分数范围 0–1。')}</p></div><span>{runs.length} {t('条评测')}</span></div>
     <div className="evaluation-results-chart-scroll">
       <div className="evaluation-results-chart" role="table" aria-label={t('所有评测指标均分')}>
-        <div className="evaluation-results-chart-row evaluation-results-chart-header" role="row" style={{gridTemplateColumns:columns}}><span role="columnheader">{t('评测')}</span>{metricIds.map(id=><span role="columnheader" key={id}>{t(metricNames[id]||id)}</span>)}{canManage&&<span role="columnheader">{t('操作')}</span>}</div>
-        {!metricIds.length&&<p className="evaluation-guidance">{t('本次评测未配置评分指标。')}</p>}
+        <div className="evaluation-results-chart-row evaluation-results-chart-header" role="row" style={{gridTemplateColumns:columns}}><span role="columnheader">{t('评测')}</span>{metrics.map(metric=><span role="columnheader" key={metric.key}>{t(metricName(metric))}</span>)}{canManage&&<span role="columnheader">{t('操作')}</span>}</div>
+        {!metrics.length&&<p className="evaluation-guidance">{t('本次评测未配置评分指标。')}</p>}
         {runs.map(run=><div className="evaluation-results-chart-row" role="row" style={{gridTemplateColumns:columns}} key={run.id}>
           <div className="evaluation-results-chart-label" role="rowheader"><button type="button" className="text-button evaluation-results-chart-name" onClick={()=>onOpen(run.id)}>{run.name||run.id.slice(0,8)}</button><small><EvaluationStatus status={run.status} language={language}/> · {new Date(run.created_at).toLocaleString(language)} · {run.case_count} {t('样本')}</small></div>
-          {metricIds.map(id=>{const score=run.summary?.metrics?.[id]?.mean;return <div className="evaluation-results-chart-cell" role="cell" key={id} aria-label={`${t(metricNames[id]||id)} ${score==null?t('暂无评分'):score.toFixed(3)}`}><div className="evaluation-results-chart-track"><span style={{width:score==null?'0%':`${Math.max(0,Math.min(1,score))*100}%`}}/></div><strong>{score==null?'—':score.toFixed(3)}</strong></div>})}
+          {metrics.map(metric=>{const summary=run.summary?.metrics?.[metric.id];const score=metric.id==='rules.recall_at_k'&&summary?.k!==metric.k?null:summary?.mean;return <div className="evaluation-results-chart-cell" role="cell" key={metric.key} aria-label={`${t(metricName(metric))} ${score==null?t('暂无评分'):score.toFixed(3)}`} ><div className="evaluation-results-chart-track"><span style={{width:score==null?'0%':`${Math.max(0,Math.min(1,score))*100}%`}}/></div><strong>{score==null?'—':score.toFixed(3)}</strong></div>})}
           {canManage&&<div className="evaluation-results-chart-action">{deleteAction(run)}</div>}
         </div>)}
       </div>

@@ -7,6 +7,7 @@ from backend.evaluation_results import summarize, export_run
 from backend.evaluation_contracts import (DEFAULT_JUDGE_PROMPT, METRICS, RUN_STATES, CASE_STATES, METRIC_STATES, PrepareEvaluation,
     metric_catalog, model_evidence, scoring_engine, evaluation_type)
 from backend.evaluation_store import EvaluationStore, fingerprint
+from backend.evaluation_recall import recall_settings
 from backend.schemas import PlaygroundRequest
 from backend.dataset_llm import generation_parameters
 from backend.tenant_context import can_manage_workspace
@@ -94,6 +95,11 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
         if any(not any(k in selected[m.id]['sample_kinds'] for k in payload.sample_kinds) for m in payload.metrics):raise HTTPException(400,'指标不支持所选样本类型')
         metrics = [{**selected[metric.id], **metric.model_dump(exclude={'id','threshold'}), 'threshold': {**selected[metric.id]['threshold'], 'value': metric.threshold}}
                    for metric in payload.metrics]
+        cutoff = recall_settings(target, metrics, resolve_access)
+        if cutoff:
+            for metric in metrics:
+                if metric['id'] == 'rules.recall_at_k':
+                    metric.update(cutoff)
         return public(target_repo.prepare(payload, request_hash, {'target': target, 'result_judge': judge_snapshot,
                                   'scoring_engine': scoring_engine(engine), 'metrics': metrics, 'budget': budget_values,
                                   'evaluation_type':payload.evaluation_type or evaluation_type({'target':target}),
@@ -105,7 +111,10 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
 
     @router.post('/evaluation-runs/{run_id}/rerun', status_code=201)
     def rerun(run_id: str):
-        return public(repo().rerun(run_id))
+        target_repo = repo()
+        original = target_repo.get(run_id)
+        cutoff = recall_settings(original['evidence']['target'], original['evidence']['metrics'], resolve_access)
+        return public(target_repo.rerun(run_id, recall_cutoff=cutoff))
 
     @router.get('/evaluation-runs')
     def list_runs(limit: int = Query(50, ge=1, le=100), dataset_id: str | None = Query(None, min_length=1, max_length=128)):

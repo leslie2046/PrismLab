@@ -19,6 +19,7 @@ from backend.dataset_trace import GenerationTrace
 from backend.dataset_build_control import BuildControl, BuildRepository, build_state, RETRY_LIMIT, RequestLimitExceeded
 from backend.dataset_llm import generation_parameters
 from shared.request_control import GenerationStopped, current_control
+from shared.llm_stream import stream_chat
 from backend.dify_names import api_root
 from backend.schemas import ProviderSelection
 from backend.dataset_golden import DatasetItem, ALIASES, APP_FIELDS, Golden
@@ -472,7 +473,8 @@ def regenerate_answers(repo, identifier, item_ids, config, key, prompt, options=
     except (HTTPException, ValueError, requests.RequestException) as error:
         detail = str(error) if isinstance(error, ValueError) and str(error) else '答案重新生成未完成，已生成的新答案保留；请检查模型和上下文后重试。'
         repo.mutate(identifier, lambda c, d: d.update(status='failed', error=detail), generating=True)
-    except Exception:
+    except Exception as error:
+        logger.error('Dataset %s answer regeneration failed (%s)', identifier, type(error).__name__)
         repo.mutate(identifier, lambda c, d: d.update(status='failed', error='答案重新生成失败，已生成的新答案保留。'), generating=True)
     finally:
         if usage['requests']:

@@ -161,7 +161,7 @@ class MultiRetrievalTests(unittest.TestCase):
         self.assertTrue(all(r['score'] is None for r in run['metric_results']))
 
     def test_global_reranker_counts_against_budget(self):
-        self.request['budget']['max_requests']=4
+        self.request['budget']['max_requests']=2  # Two query-only retrieval calls leave no reranker budget.
         run,_,http=self.build()
         self.assertEqual(run['error'],'budget_exhausted',run)
         self.assertFalse(any(call.args[0].endswith('/rerank') for call in http.call_args_list))
