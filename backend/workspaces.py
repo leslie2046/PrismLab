@@ -42,15 +42,17 @@ class MemberRole(BaseModel):
 class WorkspaceRuntime:
     store: RunStore
     runner: BenchmarkRunner
+    task_queue: object | None = None
 
 
 class WorkspaceManager:
-    def __init__(self, root_store, project_root: Path, data_dir: Path, secret_box, enabled=True):
+    def __init__(self, root_store, project_root: Path, data_dir: Path, secret_box, enabled=True, durable_tasks=False):
         self.root_store = root_store
         self.project_root = project_root
         self.data_dir = data_dir
         self.secret_box = secret_box
         self.enabled = enabled
+        self.durable_tasks = durable_tasks
         self.runtimes = {}
         self.lock = threading.RLock()
 
@@ -190,8 +192,14 @@ class WorkspaceManager:
                     raise HTTPException(404, "Workspace not found")
                 target_store = RunStore(self.root_store.database_url, initialize=False, schema_name=row["schema_name"])
             reports = self.data_dir / "reports" if identifier == "legacy" else self.data_dir / "workspaces" / identifier / "reports"
-            runner = BenchmarkRunner(target_store, self.project_root, reports, self.secret_box, allow_environment_credentials=not self.enabled)
-            runtime = WorkspaceRuntime(target_store, runner)
+            task_queue = None
+            if self.durable_tasks:
+                from backend.task_queue import TaskQueue
+                task_queue = TaskQueue(target_store)
+            runner = BenchmarkRunner(target_store, self.project_root, reports, self.secret_box,
+                                     allow_environment_credentials=not self.enabled,
+                                     task_queue=task_queue)
+            runtime = WorkspaceRuntime(target_store, runner, task_queue)
             self.runtimes[identifier] = runtime
             return runtime
 

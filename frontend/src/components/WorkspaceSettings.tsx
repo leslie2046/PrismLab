@@ -10,6 +10,7 @@ import { Dropdown, IdentityAvatar } from "./Dropdown";
 import { Pagination, usePagination } from "./Pagination";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { AccountSettings } from "./AccountSettings";
+import { useConfirm } from "./ConfirmDialog";
 
 export type WorkspaceSettingsSection = "members" | "invitations" | "account";
 
@@ -19,6 +20,7 @@ export function WorkspaceSettings({ section, language }: {
   const auth = useAuth();
   const workspace = auth.workspace;
   const t = (value: string) => tr(language, value);
+  const confirm = useConfirm();
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([]);
   const [sent, setSent] = useState<SentInvitation[]>([]);
@@ -95,7 +97,7 @@ export function WorkspaceSettings({ section, language }: {
           const canAct = permissions.remove || permissions.changeRole;
           return <tr key={member.id}><td><div className="workspace-member-identity"><IdentityAvatar name={member.name} src={member.avatar_url} /><span><strong>{member.name}{self && <small className="workspace-you">{t("（你）")}</small>}</strong><small className="workspace-member-id">{member.username}</small></span></div></td><td><span className="workspace-provider-badge">{providerName(member.provider)}</span></td><td><span className={`workspace-role-badge role-${member.role}`}>{roleName(member.role)}</span></td><td className="workspace-action-cell">{canAct && <Dropdown label={`${member.username} ${t("成员操作")}`} trigger={<MoreHorizontal aria-hidden="true" />} className="icon-button" width={220}>{close => <>
             {permissions.changeRole && <button type="button" className="identity-menu-item" disabled={busy} onClick={() => { close(); void act(() => workspaceApi.role(workspace.id, member.id, member.role === "admin" ? "member" : "admin")); }}>{t(member.role === "admin" ? "设为普通成员" : "设为管理员")}</button>}
-            <div className="identity-menu-divider" /><button type="button" className="identity-menu-item danger" disabled={busy} onClick={() => { close(); if (window.confirm(t("确认移除此成员？其个人空间不受影响。"))) void act(() => workspaceApi.remove(workspace.id, member.id)); }}>{t("移除成员")}</button>
+            <div className="identity-menu-divider" /><button type="button" className="identity-menu-item danger" disabled={busy} onClick={async () => { close(); if (await confirm({ title: t("确认移除成员吗？"), message: t("确认移除此成员？"), detail: t("其个人空间不受影响。"), confirmLabel: t("确认移除"), danger: true })) void act(() => workspaceApi.remove(workspace.id, member.id)); }}>{t("移除成员")}</button>
           </>}</Dropdown>}</td></tr>;
         })}</tbody></table>{!loading && !error && !filtered.length && <div className="empty-state compact-empty">{t("没有匹配的成员")}</div>}</div><Pagination {...memberPagination} total={filtered.length} language={language} label={t("成员")} disabled={busy || loading} /></> : <><div className="workspace-invitation-list">{pageItems(sent, sentPagination.page, sentPagination.pageSize).map(invitation => <div className="workspace-invitation" key={invitation.id}><div><strong>{invitation.username}</strong><p>{providerName(invitation.provider)} · {t("有效期至")} {date(invitation.expires_at)}</p></div><button type="button" className="ghost" disabled={busy} onClick={() => void act(() => workspaceApi.revoke(workspace.id, invitation.id))}>{t("撤销邀请")}</button></div>)}{!sent.length && <div className="empty-state compact-empty">{t("暂无待处理邀请")}</div>}</div><Pagination {...sentPagination} total={sent.length} language={language} label={t("待处理邀请")} disabled={busy || loading} /></>}
       </section>

@@ -1,6 +1,7 @@
 import type { BulkResult, SelectionSnapshot } from './bulkSelection';
 import { authenticatedFetch } from './api';
 import type { Catalog, Dataset, DatasetItem, DatasetSettings, DatasetGenerationOptions, DatasetSources, LlmSelection, GenerationDetails, GenerationRequest, GenerationRequestSummary } from './types';
+import type { EvaluationConfig } from './evaluationApi';
 import type { PageResult } from './pagination';
 import { providerDisplayName } from './providerPresets';
 import type { Language } from './i18n';
@@ -18,8 +19,9 @@ async function call<T>(path: string, method = 'GET', body?: unknown, signal?: Ab
 }
 export const datasetApi = {
   list: (page: number, size: number, q: string, signal?: AbortSignal, purpose = '') => call<PageResult<Dataset>>(`datasets?${new URLSearchParams({ page: String(page), page_size: String(size), q, ...(purpose ? {purpose} : {}) })}`, 'GET', undefined, signal),
+  bulk: (action: 'delete', ids: string[]) => call<BulkResult>('datasets/bulk', 'POST', { action, ids }),
   get: (id: string, signal?: AbortSignal) => call<Dataset>(`datasets/${id}`, 'GET', undefined, signal),
-  items: (id: string, page: number, size: number, q: string, signal?: AbortSignal) => call<PageResult<DatasetItem>>(`datasets/${id}/items?${new URLSearchParams({ page: String(page), page_size: String(size), q })}`, 'GET', undefined, signal),
+  items: (id: string, page: number, size: number, q: string, signal?: AbortSignal, quality: 'all' | 'issues' | 'omission' = 'all') => call<PageResult<DatasetItem>>(`datasets/${id}/items?${new URLSearchParams({ page: String(page), page_size: String(size), q, quality })}`, 'GET', undefined, signal),
   generation: (id: string, itemId: string, signal?: AbortSignal) => call<GenerationDetails>(`datasets/${id}/items/${itemId}/generation`, 'GET', undefined, signal),
   generationRequests: (id: string, itemId: string, page: number, size: number, signal?: AbortSignal) => call<PageResult<GenerationRequestSummary>>(`datasets/${id}/items/${itemId}/generation/requests?page=${page}&page_size=${size}`, 'GET', undefined, signal),
   generationRequest: (id: string, itemId: string, requestId: string, signal?: AbortSignal) => call<GenerationRequest>(`datasets/${id}/items/${itemId}/generation/requests/${requestId}`, 'GET', undefined, signal),
@@ -29,6 +31,7 @@ export const datasetApi = {
   import: (form: FormData) => call<Dataset>('datasets/import', 'POST', form),
   generate: (form: FormData) => call<Dataset>('datasets/generate', 'POST', form),
   update: (id: string, value: { name: string; description: string; evaluation_purpose?: 'rag' | 'retrieval' | 'both' }) => call<Dataset>(`datasets/${id}`, 'PUT', value),
+  saveEvaluationConfig: (id: string, value: EvaluationConfig) => call<Dataset>(`datasets/${id}/evaluation-config`, 'PUT', value),
   delete: (id: string) => call<void>(`datasets/${id}`, 'DELETE'),
   cancel: (id: string) => call<Dataset>(`datasets/${id}/cancel`, 'POST'),
   retry: (id: string) => call<Dataset>(`datasets/${id}/retry`, 'POST'),
@@ -42,7 +45,8 @@ export const datasetApi = {
   saveItem: (id: string, itemId: string | undefined, value: unknown) => call<Dataset>(`datasets/${id}/items${itemId ? `/${itemId}` : ''}`, itemId ? 'PUT' : 'POST', value),
   deleteItem: (id: string, itemId: string) => call<void>(`datasets/${id}/items/${itemId}`, 'DELETE'),
   settings: () => call<DatasetSettings>('dataset-settings'),
-  saveSettings: (value: { max_concurrent?: number; evaluation_max_concurrent?: number; evaluation_max_requests?: number; evaluation_max_output_tokens?: number; default_llm?: LlmSelection | null; default_embedding_model?: LlmSelection | null; default_critic_llm?: LlmSelection | null; prompt?: string | null; critic_prompt?: string | null; default_judge_llm?: LlmSelection | null; default_reranker?: LlmSelection | null; scoring_engine?: 'deepeval' | 'ragas'; judge_prompt?: string | null }) => call<DatasetSettings>('dataset-settings', 'PUT', value),
+  generationPrompt: (value: { backend: string; prompt?: string; include_expected_output?: boolean; method?: string }, signal?: AbortSignal) => call<{ system_prompt: string }>(`dataset-generation-prompt?${new URLSearchParams({ backend: value.backend, prompt: value.prompt || '', include_expected_output: String(value.include_expected_output ?? true), method: value.method || 'contexts' })}`, 'GET', undefined, signal),
+  saveSettings: (value: { generation_thinking_mode?: 'auto' | 'enabled' | 'disabled'; critic_thinking_mode?: 'auto' | 'enabled' | 'disabled'; judge_thinking_mode?: 'auto' | 'enabled' | 'disabled'; max_concurrent?: number; evaluation_max_concurrent?: number; evaluation_max_requests?: number; evaluation_max_output_tokens?: number; default_llm?: LlmSelection | null; default_embedding_model?: LlmSelection | null; default_critic_llm?: LlmSelection | null; prompt?: string | null; critic_prompt?: string | null; default_judge_llm?: LlmSelection | null; default_reranker?: LlmSelection | null; scoring_engine?: 'deepeval' | 'ragas'; judge_prompt?: string | null }) => call<DatasetSettings>('dataset-settings', 'PUT', value),
   export: async (id: string, format: 'json' | 'jsonl' | 'csv' = 'json', ids?: string[]) => {
     const response = await authenticatedFetch(`/api/datasets/${id}/export?format=${format}`, ids ? {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),

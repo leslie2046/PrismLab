@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,9 @@ DATASET_TABLE_COLUMNS = {
     "dataset_generation_traces": ("id", "dataset_id", "created_at", "payload"),
     "dataset_generation_records": ("id", "dataset_id", "trace_id", "kind", "created_at", "payload"),
 }
+TASK_TABLE_COLUMNS = {
+    "background_jobs": ("id", "created_at", "updated_at", "kind", "status", "payload", "attempt", "lease_owner", "lease_until", "error"),
+}
 
 
 def utc_now() -> str:
@@ -53,41 +57,88 @@ class RunStore:
 
     @staticmethod
     def create_tables(connection: psycopg.Connection) -> None:
-        for table, columns in {**TABLE_COLUMNS, **DATASET_TABLE_COLUMNS}.items():
+        for table, columns in {**TABLE_COLUMNS, **DATASET_TABLE_COLUMNS, **TASK_TABLE_COLUMNS}.items():
             definitions = [
                 f"{column} {'INTEGER' if table == 'system_settings' and column == 'id' else 'TEXT'}"
-                f"{' PRIMARY KEY' if index == 0 else ' NOT NULL'}"
+                f"{' PRIMARY KEY' if index == 0 else '' if table == 'background_jobs' and column in {'lease_owner', 'lease_until', 'error'} else ' NOT NULL'}"
                 for index, column in enumerate(columns)
             ]
             connection.execute(f"CREATE TABLE IF NOT EXISTS {table} ({', '.join(definitions)})")
         connection.execute("CREATE INDEX IF NOT EXISTS dataset_items_dataset_idx ON dataset_items(dataset_id, created_at, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS dataset_generation_trace_idx ON dataset_generation_records(dataset_id,trace_id,kind,created_at,id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS background_jobs_queue_idx ON background_jobs(status,kind,created_at,id)")
         from backend.evaluation_store import create_evaluation_tables
         create_evaluation_tables(connection)
 
     def initialize(self) -> None:
         with self._session() as connection:
             self.create_tables(connection)
-            connection.execute("""UPDATE datasets SET payload = (payload::jsonb ||
-                '{"status":"failed","error":"服务重启中断了构建，已生成的数据仍保留，可重试继续构建。"}'::jsonb)::text
-                WHERE payload::jsonb->>'status' = 'generating'""")
-            for row in connection.execute("SELECT run_id, payload FROM run_ai_reports").fetchall():
-                report = json.loads(row["payload"])
-                if report.get("status") == "generating":
-                    report.update(status="failed", error="分析因服务重启中断，请重新分析。")
-                    connection.execute("UPDATE run_ai_reports SET payload=%s WHERE run_id=%s", (json.dumps(report), row["run_id"]))
-            rows = connection.execute(
-                "SELECT id, payload FROM runs WHERE status IN ('queued', 'running')"
-            ).fetchall()
-            for row in rows:
-                payload = json.loads(row["payload"])
-                payload["status"] = "failed"
-                payload["error"] = "Server restarted before the run finished"
-                payload["updated_at"] = utc_now()
-                connection.execute(
-                    "UPDATE runs SET status = %s, updated_at = %s, payload = %s WHERE id = %s",
-                    ("failed", payload["updated_at"], json.dumps(payload), row["id"]),
-                )
+            # Durable workers reclaim leased jobs after their lease expires. The
+            # local development fallback still marks process-owned work failed.
+            durable_tasks = os.getenv("PRISMLAB_DURABLE_TASKS", "false").lower() in {"1", "true", "yes", "on"}
+            if not durable_tasks:
+                connection.execute("""UPDATE datasets SET payload = (payload::jsonb ||
+                    '{"status":"failed","error":"服务重启中断了构建，已生成的数据仍保留，可重试继续构建。"}'::jsonb)::text
+                    WHERE payload::jsonb->>'status' = 'generating'""")
+                for row in connection.execute("SELECT run_id, payload FROM run_ai_reports").fetchall():
+                    report = json.loads(row["payload"])
+                    if report.get("status") == "generating":
+                        report.update(status="failed", error="分析因服务重启中断，请重新分析。")
+                        connection.execute("UPDATE run_ai_reports SET payload=%s WHERE run_id=%s", (json.dumps(report), row["run_id"]))
+                rows = connection.execute("SELECT id, payload FROM runs WHERE status IN ('queued', 'running')").fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    payload["status"] = "failed"
+                    payload["error"] = "Server restarted before the run finished"
+                    payload["updated_at"] = utc_now()
+                    connection.execute(
+                        "UPDATE runs SET status = %s, updated_at = %s, payload = %s WHERE id = %s",
+                        ("failed", payload["updated_at"], json.dumps(payload), row["id"]),
+                    )
+            else:
+                # Upgrade records created before durable workers were enabled.
+                # The domain rows remain the source of truth; these inserts only
+                # restore the missing queue envelopes after a deployment.
+                now = utc_now()
+                for row in connection.execute("SELECT id,payload FROM runs WHERE status IN ('queued','running')").fetchall():
+                    connection.execute(
+                        """INSERT INTO background_jobs
+                           (id,created_at,updated_at,kind,status,payload,attempt,lease_owner,lease_until,error)
+                           VALUES (%s,%s,%s,'benchmark','queued',%s,'0',NULL,NULL,NULL)
+                           ON CONFLICT(id) DO NOTHING""",
+                        (f"benchmark:{row['id']}", now, now, json.dumps({'run_id': row['id']}, ensure_ascii=False)),
+                    )
+                for row in connection.execute("SELECT id,payload FROM datasets WHERE payload::jsonb->>'status'='generating'").fetchall():
+                    dataset = json.loads(row['payload'])
+                    kind = 'dataset_answers' if dataset.get('build_mode') == 'regenerate_answers' else 'dataset_build'
+                    payload = {'dataset_id': row['id'], 'build_token': dataset.get('build_token'), 'kind': kind}
+                    if kind == 'dataset_answers':
+                        payload['item_ids'] = dataset.get('build_answer_pending_ids') or dataset.get('build_answer_item_ids') or []
+                    connection.execute(
+                        """INSERT INTO background_jobs
+                           (id,created_at,updated_at,kind,status,payload,attempt,lease_owner,lease_until,error)
+                           VALUES (%s,%s,%s,%s,'queued',%s,'0',NULL,NULL,NULL)
+                           ON CONFLICT(id) DO NOTHING""",
+                        (f"{kind}:{row['id']}:{dataset.get('build_token') or 'current'}", now, now, kind,
+                         json.dumps(payload, ensure_ascii=False)),
+                    )
+                for row in connection.execute("SELECT run_id,payload FROM run_ai_reports WHERE payload::jsonb->>'status'='generating'").fetchall():
+                    report = json.loads(row['payload'])
+                    selection = (report.get('requested_model') or {}).get('selection')
+                    if not selection:
+                        continue
+                    generation_id = report.get('generation_id')
+                    if not generation_id:
+                        continue
+                    payload = {'run_id': row['run_id'], 'generation_id': generation_id,
+                               'selection': selection, 'language': report.get('language', 'zh-CN')}
+                    connection.execute(
+                        """INSERT INTO background_jobs
+                           (id,created_at,updated_at,kind,status,payload,attempt,lease_owner,lease_until,error)
+                           VALUES (%s,%s,%s,'ai_report','queued',%s,'0',NULL,NULL,NULL)
+                           ON CONFLICT(id) DO NOTHING""",
+                        (f"ai_report:{row['run_id']}:{generation_id}", now, now, json.dumps(payload, ensure_ascii=False)),
+                    )
             completed_rows = connection.execute(
                 "SELECT id, payload FROM runs WHERE status = 'completed'"
             ).fetchall()
@@ -367,6 +418,28 @@ class RunStore:
         return {'items': [{'id': row['group_id'], 'plan_id': row['plan_id'], 'name': row['name'],
                            'run_count': row['run_count'], 'latest_run': row['run']} for row in rows],
                 'total': total, 'page': page, 'page_size': page_size}
+
+    def runs_for_plan_group(self, group_id: str) -> list[dict[str, Any]]:
+        if group_id.startswith('plan:'):
+            plan_id = group_id[5:]
+            if not plan_id:
+                return []
+            where = "payload::jsonb->>'plan_id' = %s"
+            parameters = (plan_id,)
+        elif group_id.startswith('run:'):
+            run_id = group_id[4:]
+            if not run_id:
+                return []
+            where = "id = %s AND COALESCE(payload::jsonb->>'plan_id', '') = ''"
+            parameters = (run_id,)
+        else:
+            return []
+        with self._session() as connection:
+            rows = connection.execute(
+                f"SELECT payload FROM runs WHERE {where} ORDER BY created_at DESC, id DESC",
+                parameters,
+            ).fetchall()
+        return [json.loads(row['payload']) for row in rows]
 
     def plans_page(self, page: int, page_size: int, **filters) -> dict[str, Any]:
         return self._page("test_plans", "created_at", page, page_size, **filters)

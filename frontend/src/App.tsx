@@ -36,6 +36,7 @@ import { RunHistory } from "./components/RunHistory";
 import { ProviderLogo } from "./components/ProviderLogo";
 import { providerDisplayName } from "./providerPresets";
 import { tr, type Language } from "./i18n";
+import { useConfirm } from "./components/ConfirmDialog";
 import type { Benchmark, Catalog, Run, ServiceConfig, TestPlan } from "./types";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -69,6 +70,7 @@ export default function App() {
   });
   const [resolvedDark, setResolvedDark] = useState(() => document.documentElement.dataset.theme !== "light");
   const t = (value: string) => tr(language, value);
+  const confirm = useConfirm();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [openedRun, setOpenedRun] = useState<Run | null>(null);
@@ -115,6 +117,9 @@ export default function App() {
   const [difyEditor, setDifyEditor] = useState<{ config: ServiceConfig | null } | null>(null);
   const [datasetSourceId, setDatasetSourceId] = useState<string | null>(null);
   const [datasetDetailName, setDatasetDetailName] = useState<string | null>(null);
+  const [playgroundDraft, setPlaygroundDraft] = useState<{systemPrompt: string; query: string; providerId?: string; model?: string; credentialId?: string; parameters: Record<string, string | number>} | null>(null);
+  const [historyPlanId, setHistoryPlanId] = useState<string | null>(null);
+  const datasetDetailOpen = activeTab === "datasets" && Boolean(datasetDetailName);
   const [datasetNavigationRevision, setDatasetNavigationRevision] = useState(0);
   const difyTriggerRef = useRef<HTMLElement | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -131,8 +136,12 @@ export default function App() {
   const difyPagination = usePagination(difyConfigs.length, JSON.stringify([difySearch, difyType]), 15);
   const planPagination = useServerPagination(api.plansPage, activeTab === "new-run", listRevision, planFilters);
   const planSelection = useBulkSelection(JSON.stringify([activeTab, planFilters]));
+  const difySelection = useBulkSelection(JSON.stringify([activeTab, difySearch, difyType]));
   const planPageIds = planPagination.items.map(value => value.id);
+  const difyPageItems = pageItems(difyConfigs, difyPagination.page, difyPagination.pageSize);
+  const difyPageIds = difyPageItems.map(value => value.id);
   const planSelectionDisabled = planPagination.loading || !!planPagination.error || !!planActionId || submitting;
+  const difySelectionDisabled = serviceConfigsState !== "ready" || difySelection.busy;
   const planFiltered = Boolean(planFilters.q?.trim() || planFilters.status || planFilters.benchmark || planFilters.repeat_mode);
   const typeOptions = [{ value: "llm", label: "LLM" }, { value: "embedding", label: "Embedding" }, { value: "reranker", label: "Reranker" }, { value: "audio", label: "Audio" }, { value: "dify-retrieve", label: "Dify Retrieve" }, { value: "dify-chat", label: "Dify Chat" }];
   const statusOptions = (statuses: string[]) => statuses.map(value => ({ value, label: t(STATUS_LABELS[value]) }));
@@ -140,6 +149,15 @@ export default function App() {
 
   useEffect(() => { if (activeTab !== "dify") setDifyEditor(null); }, [activeTab]);
   useEffect(() => { if (activeTab !== "datasets") setDatasetSourceId(null); }, [activeTab]);
+  useEffect(() => {
+    const fixedWorkspace = ["overview", "playground", "dashboard", "datasets", "history", "settings", "system"].includes(activeTab);
+    document.documentElement.classList.toggle("workspace-fixed", fixedWorkspace);
+    document.body.classList.toggle("workspace-fixed", fixedWorkspace);
+    return () => {
+      document.documentElement.classList.remove("workspace-fixed");
+      document.body.classList.remove("workspace-fixed");
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     if (!planEditorOpen) return;
@@ -294,6 +312,17 @@ export default function App() {
     navigate("dashboard");
   }
 
+  function viewPlanRuns(planId: string) {
+    setHistoryPlanId(planId);
+    navigate("history");
+  }
+
+  function openPlaygroundDraft(draft: {systemPrompt: string; query: string; providerId?: string; model?: string; credentialId?: string; parameters: Record<string, string | number>}) {
+    sessionStorage.setItem("prismlab-playground-draft", JSON.stringify(draft));
+    setPlaygroundDraft(draft);
+    navigate("playground");
+  }
+
   function addConcurrencyLevel() {
     const value = Number(customLevel);
     if (!Number.isInteger(value) || value < 1 || value > 10000) {
@@ -376,7 +405,7 @@ export default function App() {
   }
 
   async function deletePlan(plan: TestPlan) {
-    if (!window.confirm(`${t("删除测试计划")} “${plan.name}”? ${t("历史运行记录会保留。")}`)) return;
+    if (!await confirm({ title: t("确认删除吗？"), message: `${t("删除测试计划")} “${plan.name}”`, detail: t("历史运行记录会保留。"), confirmLabel: t("确认删除"), danger: true })) return;
     setPlanActionId(plan.id);
     try {
       await api.deletePlan(plan.id);
@@ -406,15 +435,25 @@ export default function App() {
     }).catch(reason => setMessage(reason instanceof Error ? reason.message : String(reason)));
   }
 
-  function bulkPlans(action: 'start' | 'pause' | 'stop' | 'delete') {
+  async function bulkPlans(action: 'start' | 'pause' | 'stop' | 'delete') {
     const descriptions = { start: '启动计划可能立即运行并调用模型。', pause: '', stop: '停止计划会取消当前正在执行的运行，历史记录保留。', delete: '删除计划会取消当前运行，历史运行记录会保留。此操作无法撤销。' };
     const labels = { start: '批量开始', pause: '批量暂停', stop: '批量停止', delete: '批量删除' };
-    if (action !== 'pause' && !window.confirm(`${t(labels[action])} ${planSelection.ids.size} ${t('条记录')}？ ${t(descriptions[action])}`)) return;
+    if (action !== 'pause' && !await confirm({ title: t('请确认操作'), message: `${t(labels[action])} ${planSelection.ids.size} ${t('条记录')}`, detail: t(descriptions[action]), confirmLabel: t(action === 'delete' ? '确认删除' : '确定'), danger: action === 'delete' })) return;
     void planSelection.execute(ids => api.bulkPlans(action, ids), refreshAfterBulk);
   }
 
+  async function bulkDeleteDify() {
+    if (!difySelection.ids.size) return;
+    if (!await confirm({ title: t('确认删除吗？'), message: `${t('批量删除')} ${difySelection.ids.size} ${t('条 Dify 配置')}`, detail: t('此操作无法撤销。'), confirmLabel: t('确认删除'), danger: true })) return;
+    void difySelection.execute(ids => api.bulkServiceConfigs('delete', ids), result => {
+      setServiceConfigs(current => current.filter(config => !result.succeeded.includes(config.id)));
+      setProviderIds(current => current.filter(id => !result.succeeded.includes(id)));
+      void api.catalog().then(setCatalog).catch(error => setMessage(error instanceof Error ? error.message : t('加载配置失败')));
+    });
+  }
+
   async function deleteServiceConfig(config: ServiceConfig) {
-    if (!window.confirm(`${t(config.provider === "dify" ? "删除 Dify 配置" : "删除模型供应商")} “${config.name}”? ${t("此操作无法撤销。")}`)) return;
+    if (!await confirm({ title: t('确认删除吗？'), message: `${t(config.provider === "dify" ? "删除 Dify 配置" : "删除模型供应商")} “${config.name}”`, detail: t("此操作无法撤销。"), confirmLabel: t("确认删除"), danger: true })) return;
     try {
       await api.deleteServiceConfig(config.id);
       setServiceConfigs((current) => current.filter((item) => item.id !== config.id));
@@ -443,9 +482,9 @@ export default function App() {
     void api.catalog().then(setCatalog).catch(error => setMessage(error instanceof Error ? error.message : t("加载配置失败")));
   }
 
-  return <div className="app-shell">
-    {sidebarOpen && <button className="sidebar-scrim" aria-label={t("关闭")} onClick={() => setSidebarOpen(false)} />}
-    <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+  return <div className={`app-shell route-shell-${activeTab} ${datasetDetailOpen ? "dataset-detail-app" : ""}`}>
+    {sidebarOpen && !datasetDetailOpen && <button className="sidebar-scrim" aria-label={t("关闭")} onClick={() => setSidebarOpen(false)} />}
+    {!datasetDetailOpen && <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
       <a className="brand" href={`${window.location.pathname}${window.location.search}#overview`} aria-label={t("返回首页")} onClick={event => { event.preventDefault(); window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#overview`); window.location.reload(); }}><BrandLogo /><span><strong>PrismLab</strong><small>{t("AI 模型测试与分析平台")}</small></span></a>
       <nav aria-label={t("主导航")}>
         {isWorkspaceSettings ? <>
@@ -473,37 +512,39 @@ export default function App() {
         </>}
       </nav>
       <div className="sidebar-foot">
-        <AccountMenu language={language} onSettings={navigate} onSwitch={() => setSidebarOpen(false)} loggingOut={loggingOut} onLogout={async () => {
-          setLoggingOut(true);
-          try { await auth.logout(); }
-          catch { setSidebarOpen(false); setMessage(t("退出登录失败，请重试。")); }
-          finally { setLoggingOut(false); }
-        }} />
-        <a className="sidebar-github" href="https://github.com/leslie2046/PrismLab" target="_blank" rel="noopener noreferrer" aria-label={t("打开项目 GitHub 仓库")} title={t("打开项目 GitHub 仓库")}><Github aria-hidden="true" /></a>
+        <div className="sidebar-account-row">
+          <AccountMenu language={language} onSettings={navigate} onSwitch={() => setSidebarOpen(false)} loggingOut={loggingOut} onLogout={async () => {
+            setLoggingOut(true);
+            try { await auth.logout(); }
+            catch { setSidebarOpen(false); setMessage(t("退出登录失败，请重试。")); }
+            finally { setLoggingOut(false); }
+          }} />
+        </div>
+        <div className="sidebar-preferences-row">
+          <div className="preferences">
+            <button type="button" className="preference-control" aria-label={`${t("切换语言")}：${language === "zh-CN" ? "简体中文" : "English"}`} title={`${t("语言")}：${language === "zh-CN" ? "简体中文" : "English"}`} onClick={() => setLanguage(current => current === "zh-CN" ? "en" : "zh-CN")}>
+              <span className="preference-language" aria-hidden="true">{language === "zh-CN" ? "中" : "EN"}</span>
+            </button>
+            <button type="button" className="preference-control" aria-label={`${t("切换主题")}：${t(themeMode === "system" ? "跟随系统" : themeMode === "dark" ? "深色" : "浅色")}`} title={`${t("主题")}：${t(themeMode === "system" ? "跟随系统" : themeMode === "dark" ? "深色" : "浅色")}`} onClick={() => setThemeMode(current => current === "system" ? "dark" : current === "dark" ? "light" : "system")}>
+              {themeMode === "dark" ? <Moon aria-hidden="true" /> : themeMode === "light" ? <Sun aria-hidden="true" /> : <Monitor aria-hidden="true" />}
+            </button>
+          </div>
+          <a className="sidebar-github" href="https://github.com/leslie2046/PrismLab" target="_blank" rel="noopener noreferrer" aria-label={t("打开项目 GitHub 仓库")} title={t("打开项目 GitHub 仓库")}><Github aria-hidden="true" /></a>
+        </div>
       </div>
-    </aside>
+    </aside>}
 
     <main className={`workspace-main route-${activeTab}`}>
-      <header className="topbar">
-        <div className="topbar-title"><button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label={t("主导航")}><Menu aria-hidden="true" /></button><div className="topbar-location"><span className="topbar-workspace">{auth.workspace?.name || "PrismLab"}</span><ChevronDown className="breadcrumb-separator" aria-hidden="true" /><h1>{activeTab === "datasets" ? <button type="button" className="topbar-breadcrumb-link" onClick={() => navigate("datasets")}>{t("评测数据集")}</button> : t(({ overview: "概览", "new-run": "测试计划", history: "运行记录", dashboard: "分析看板", playground: "Playground", datasets: "评测数据集", evaluations: "评测记录", settings: "模型供应商", dify: "Dify 配置", system: "空间设置", api: "API 文档", members: "成员", invitations: "收到的邀请", account: "账户" } as Record<Tab, string>)[activeTab])}</h1>{activeTab === "datasets" && datasetDetailName && <><ChevronDown className="breadcrumb-separator dataset-detail-separator" aria-hidden="true" /><span className="topbar-current-object" aria-current="page" title={datasetDetailName}>{datasetDetailName}</span></>}<p>{t(({ overview: "查看所有测试计划与运行记录的整体状态", "new-run": "管理计划、调度规则与测试配置", history: "检查并管理历史测试运行", dashboard: "聚合分析测试计划的多次运行结果", playground: "向已配置的服务发送单次请求", datasets: "构建与管理评测数据集", evaluations: "调用应用并评估回答与检索质量", settings: "管理模型、端点与访问凭据", dify: "管理知识库与聊天应用连接", system: "管理当前空间的生成、评测、报告与自动化配置", api: "浏览 PrismLab HTTP API", members: "管理当前空间的成员与访问权限", invitations: "查看并处理团队邀请", account: "查看你的登录身份" } as Record<Tab, string>)[activeTab])}</p></div></div>
-        <div className="preferences">
-          <button type="button" className="preference-control" aria-label={`${t("切换语言")}：${language === "zh-CN" ? "简体中文" : "English"}`} title={`${t("语言")}：${language === "zh-CN" ? "简体中文" : "English"}`} onClick={() => setLanguage(current => current === "zh-CN" ? "en" : "zh-CN")}>
-            <span className="preference-language" aria-hidden="true">{language === "zh-CN" ? "中" : "EN"}</span>
-          </button>
-          <button type="button" className="preference-control" aria-label={`${t("切换主题")}：${t(themeMode === "system" ? "跟随系统" : themeMode === "dark" ? "深色" : "浅色")}`} title={`${t("主题")}：${t(themeMode === "system" ? "跟随系统" : themeMode === "dark" ? "深色" : "浅色")}`} onClick={() => setThemeMode(current => current === "system" ? "dark" : current === "dark" ? "light" : "system")}>
-            {themeMode === "dark" ? <Moon aria-hidden="true" /> : themeMode === "light" ? <Sun aria-hidden="true" /> : <Monitor aria-hidden="true" />}
-          </button>
-        </div>
-      </header>
+      {!datasetDetailOpen && <button className="mobile-menu" onClick={() => setSidebarOpen(true)} aria-label={t("主导航")}><Menu aria-hidden="true" /></button>}
 
       <div className={`content content-${activeTab}`}>
         {isWorkspaceSettings && <WorkspaceSettings section={activeTab as "members" | "invitations" | "account"} language={language} />}
         {activeTab === "evaluations" && <Evaluations catalog={catalog} language={language} onDatasets={() => navigate("datasets")} />}
-        {activeTab === "datasets" && <Datasets key={datasetNavigationRevision} catalog={catalog} language={language} onDatasetChange={setDatasetDetailName} initialDifyConfigId={datasetSourceId} onCreateClosed={() => setDatasetSourceId(null)} />}
+        {activeTab === "datasets" && <Datasets key={datasetNavigationRevision} catalog={catalog} language={language} onDatasetChange={setDatasetDetailName} initialDifyConfigId={datasetSourceId} onCreateClosed={() => setDatasetSourceId(null)} onPlayground={openPlaygroundDraft} />}
         {activeTab === "system" && <SystemSettings catalog={catalog} language={language} readOnly={!auth.canManage} initialSection={settingsSection} />}
         {analysisRun && <RunAiReport key={analysisRun.id} run={analysisRun} language={language} onClose={() => setAnalysisRun(null)} onSettings={() => { setAnalysisRun(null); navigate("system", "report"); }} />}
         {message && !planEditorOpen && <div className="alert" role="alert"><span>{message}</span><button onClick={() => setMessage("")} aria-label={t("关闭")}><X aria-hidden="true" /></button></div>}
-        {activeTab === "playground" && <Playground catalog={catalog} language={language} />}
+        {activeTab === "playground" && <Playground catalog={catalog} language={language} initialDraft={playgroundDraft} onDraftConsumed={() => setPlaygroundDraft(null)} />}
         {activeTab === "overview" && <Overview plans={plans} runs={runs} language={language} onOpenRun={openRunAnalysis} onOpenPlans={() => navigate("new-run")} onOpenDashboard={() => navigate("dashboard")} onOpenDatasets={() => navigate("datasets")} onOpenPlayground={() => navigate("playground")} />}
         {activeTab === "new-run" && <div className="workspace-grid single">
           {activeTab === "new-run" && <>
@@ -511,14 +552,14 @@ export default function App() {
             <PageHeader icon={CalendarClock} title={t('测试计划')} count={planPagination.total} description={t('计划定义何时运行；每次触发都会生成一条独立运行记录。')} actions={<button type="button" className="primary" disabled={!catalog || submitting} onClick={createPlan}><Plus aria-hidden="true" />{t('新增测试计划')}</button>} />
             <ListToolbar language={language} search={planFilters.q || ""} onSearch={q => setPlanFilters(current => ({ ...current, q }))} searchLabel={t("搜索计划名称或 ID")} onReset={() => setPlanFilters({})} filters={[
               { label: t("状态"), value: planFilters.status || "", onChange: status => setPlanFilters(current => ({ ...current, status })), options: statusOptions(["active", "paused", "stopped", "completed", "error"]) },
-              { label: t("测试类型"), value: planFilters.benchmark || "", onChange: benchmark => setPlanFilters(current => ({ ...current, benchmark })), options: typeOptions },
+              { label: t("类型"), value: planFilters.benchmark || "", onChange: benchmark => setPlanFilters(current => ({ ...current, benchmark })), options: typeOptions },
               { label: t("重复规则"), value: planFilters.repeat_mode || "", onChange: repeat_mode => setPlanFilters(current => ({ ...current, repeat_mode })), options: [{ value: "once", label: t("不重复") }, { value: "count", label: t("按次数重复") }, { value: "forever", label: t("一直重复") }] },
             ]} />
             <BulkSelectionBar selection={planSelection} language={language}>
-              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => bulkPlans('start')}><Play aria-hidden="true" />{t('批量开始')}</button>
-              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => bulkPlans('pause')}><Pause aria-hidden="true" />{t('批量暂停')}</button>
-              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => bulkPlans('stop')}><Square aria-hidden="true" />{t('批量停止')}</button>
-              <button type="button" className="ghost danger" disabled={!auth.canManage || planSelectionDisabled || planSelection.busy} onClick={() => bulkPlans('delete')}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
+              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => void bulkPlans('start')}><Play aria-hidden="true" />{t('批量开始')}</button>
+              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => void bulkPlans('pause')}><Pause aria-hidden="true" />{t('批量暂停')}</button>
+              <button type="button" className="ghost" disabled={planSelectionDisabled || planSelection.busy} onClick={() => void bulkPlans('stop')}><Square aria-hidden="true" />{t('批量停止')}</button>
+              <button type="button" className="ghost danger" disabled={!auth.canManage || planSelectionDisabled || planSelection.busy} onClick={() => void bulkPlans('delete')}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
             </BulkSelectionBar>
             <div className="table-scroll"><table className="plan-table"><thead><tr><th className="selection-cell"><SelectionCheckbox label={t("全选当前页")} checked={planPageIds.length > 0 && planPageIds.every(id => planSelection.ids.has(id))} mixed={planPageIds.some(id => planSelection.ids.has(id)) && !planPageIds.every(id => planSelection.ids.has(id))} disabled={planSelectionDisabled || planSelection.busy || !planPageIds.length} onChange={checked => planSelection.toggle(planPageIds, checked)} /></th><th>{t("计划")}</th><th>{t("状态")}</th><th>{t("调度规则")}</th><th>{t("创建时间")}</th><th>{t("下次运行")}</th><th>{t("运行次数")}</th><th>{t("操作")}</th></tr></thead><tbody>{planPagination.items.map((plan) => <tr key={plan.id} className={planSelection.ids.has(plan.id) ? "bulk-selected" : ""}><td className="selection-cell"><SelectionCheckbox label={`${t("选择记录")} ${plan.id}`} checked={planSelection.ids.has(plan.id)} disabled={planSelectionDisabled || planSelection.busy} onChange={checked => planSelection.toggle([plan.id], checked)} /></td>
               <td><button type="button" className="plan-name-button" disabled={submitting || planSelection.busy || !canEditPlan(plan)} onClick={() => editPlan(plan)}>{plan.name}</button><small>{plan.benchmark} · {plan.id}</small></td>
@@ -532,6 +573,7 @@ export default function App() {
                 {plan.status !== "active" && <button type="button" className="icon-button" title={t("开始计划")} aria-label={t("开始计划")} disabled={planActionId === plan.id || planSelection.busy} onClick={() => void controlPlan(plan, "start")}><Play aria-hidden="true" /></button>}
                 {plan.status === "active" && <button type="button" className="icon-button" title={t("暂停计划")} aria-label={t("暂停计划")} disabled={planActionId === plan.id || planSelection.busy} onClick={() => void controlPlan(plan, "pause")}><Pause aria-hidden="true" /></button>}
                 {(plan.status === "active" || plan.status === "paused") && <button type="button" className="icon-button" title={t("停止计划")} aria-label={t("停止计划")} disabled={planActionId === plan.id || planSelection.busy} onClick={() => void controlPlan(plan, "stop")}><Square aria-hidden="true" /></button>}
+                <button type="button" className="icon-button" title={t("查看运行记录")} aria-label={t("查看运行记录")} disabled={planSelection.busy} onClick={() => viewPlanRuns(plan.id)}><History aria-hidden="true" /></button>
                 <button type="button" className="icon-button danger" title={t("删除测试计划")} aria-label={t("删除测试计划")} disabled={!auth.canManage || planActionId === plan.id || planSelection.busy} onClick={() => void deletePlan(plan)}><Trash2 aria-hidden="true" /></button>
               </div></td>
             </tr>)}</tbody></table>{!planPagination.loading && !planPagination.error && !planPagination.total && <EmptyState icon={CalendarClock} title={t(planFiltered ? "没有匹配的记录，请调整搜索或筛选条件。" : "暂无测试计划，点击“新增测试计划”创建第一个计划。")} />}</div>
@@ -578,24 +620,31 @@ export default function App() {
 
         {activeTab === "dashboard" && <AnalysisDashboard plans={plans} runs={dashboardRuns} language={language} dark={resolvedDark} initialPlanId={dashboardPlanId} initialRunId={dashboardPlanId === selected?.plan_id ? selected?.id || null : null} onSelectRun={run => { setOpenedRun(run); setSelectedId(run.id); }} />}
 
-        {activeTab === "history" && <RunHistory plans={plans} runs={dashboardRuns} language={language} dark={resolvedDark} canManage={auth.canManage} revision={listRevision} onSelectRun={run => {setOpenedRun(run);setSelectedId(run.id)}} onReport={setAnalysisRun} onChanged={() => setListRevision(value => value+1)}/>}
+        {activeTab === "history" && <RunHistory plans={plans} runs={dashboardRuns} language={language} dark={resolvedDark} canManage={auth.canManage} revision={listRevision} initialPlanId={historyPlanId} onInitialPlanConsumed={() => setHistoryPlanId(null)} onSelectRun={run => {setOpenedRun(run);setSelectedId(run.id)}} onReport={setAnalysisRun} onChanged={() => setListRevision(value => value+1)}/>}
 
         {activeTab === "settings" && <ProviderManager configs={serviceConfigs} configurationState={serviceConfigsState} benchmarks={catalog?.benchmarks || []} language={language} readOnly={!auth.canManage} onChanged={async () => { const [nextConfigs, nextCatalog] = await Promise.all([api.serviceConfigs(), api.catalog()]); setServiceConfigs(nextConfigs); setServiceConfigsState("ready"); setCatalog(nextCatalog); }} />}
         {activeTab === "dify" && <section className="dify-settings">
           <article className="panel connections-canvas">
             <PageHeader icon={Workflow} title={t('Dify 配置')} count={allDifyConfigs.length} description={t(auth.canManage ? '管理知识库与聊天应用连接' : '只读：可使用团队已配置的模型，配置仅限所有者和管理员修改。')} actions={auth.canManage && <button type="button" className="primary" onClick={() => editServiceConfig()}><Plus aria-hidden="true" />{t('新增 Dify 配置')}</button>} />
             <ListToolbar language={language} search={difySearch} onSearch={setDifySearch} searchLabel={t("搜索配置名称、地址或 ID")} onReset={() => { setDifySearch(""); setDifyType(""); }} filters={[
-              { label: t("Dify 类型"), value: difyType, onChange: setDifyType, options: [{ value: "dify-retrieve", label: t("知识库检索") }, { value: "dify-chat", label: t("聊天应用") }] },
+              { label: t("类型"), value: difyType, onChange: setDifyType, options: [{ value: "dify-retrieve", label: t("知识库检索") }, { value: "dify-chat", label: t("聊天应用") }] },
             ]} />
+            <BulkSelectionBar selection={difySelection} language={language}>
+              <button type="button" className="ghost" disabled={difySelectionDisabled || !difyConfigs.length} onClick={() => difySelection.toggle(difyConfigs.map(value => value.id), true)}>{t('全选')}</button>
+              <button type="button" className="ghost" disabled={difySelectionDisabled || !difyPageIds.length} onClick={() => difySelection.toggle(difyPageIds, true)}>{t('全选当前页')}</button>
+              <button type="button" className="ghost" disabled={difySelection.busy} onClick={difySelection.clear}>{t('全不选')}</button>
+              <button type="button" className="ghost danger" disabled={!auth.canManage || difySelectionDisabled} onClick={() => void bulkDeleteDify()}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
+            </BulkSelectionBar>
             <div className="table-scroll dify-list-scroll" role="region" aria-label={t("Dify 配置列表")} tabIndex={0}>
-              <table className="dify-config-table"><thead><tr>{["名称", "Dify 类型", "服务地址", "知识库 / 应用 ID", "操作"].map(label => <th scope="col" key={label}>{t(label)}</th>)}</tr></thead>
-                <tbody>{pageItems(difyConfigs, difyPagination.page, difyPagination.pageSize).map(config => {
+              <table className="dify-config-table"><thead><tr><th className="selection-cell"><SelectionCheckbox label={t('全选')} checked={difyConfigs.length > 0 && difyConfigs.every(config => difySelection.ids.has(config.id))} mixed={difyConfigs.some(config => difySelection.ids.has(config.id)) && !difyConfigs.every(config => difySelection.ids.has(config.id))} disabled={!auth.canManage || difySelectionDisabled || !difyConfigs.length} onChange={checked => difySelection.toggle(difyConfigs.map(config => config.id), checked)} /></th>{["名称", "Dify 类型", "服务地址", "知识库 / 应用 ID", "操作"].map(label => <th scope="col" key={label}>{t(label)}</th>)}</tr></thead>
+                <tbody>{difyPageItems.map(config => {
                   const benchmark = config.models[0]?.benchmark || config.benchmark;
                   const knowledge = benchmark === "dify-retrieve";
                   const endpoint = config.models[0]?.base_url || config.base_url;
                   const resourceId = knowledge ? config.dataset_id : config.app_id;
                   const available = !!config.dataset_id && !!catalog?.benchmarks.find(value => value.id === "dify-retrieve")?.providers.some(value => value.id === config.id);
-                  return <tr key={config.id}>
+                  return <tr key={config.id} className={difySelection.ids.has(config.id) ? "bulk-selected" : undefined}>
+                    <td className="selection-cell"><SelectionCheckbox label={`${t('选择记录')} ${config.name}`} checked={difySelection.ids.has(config.id)} disabled={!auth.canManage || difySelectionDisabled} onChange={checked => difySelection.toggle([config.id], checked)} /></td>
                     <td><div className="dify-config-name"><DifyTypeIcon benchmark={benchmark} language={language} /><strong>{config.name}</strong></div></td>
                     <td>{t(knowledge ? "知识库检索" : "聊天应用")}</td>
                     <td><span className="dify-config-value" title={endpoint || undefined}>{endpoint || t("Endpoint 待配置")}</span></td>

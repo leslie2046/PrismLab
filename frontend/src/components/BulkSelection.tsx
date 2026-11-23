@@ -18,7 +18,7 @@ export function BulkSelectionBar({ selection, language, children }: {
   return <div className="bulk-selection" aria-label={t('批量操作')} aria-busy={selection.busy}>
     <div className="bulk-selection-controls"><span className="bulk-count" role="status">{t('已选择')} <strong>{selection.ids.size}</strong></span>
     </div>
-    {selection.ids.size > 0 && <div className="bulk-actions">{children}<span className="bulk-scope">{t('仅操作已勾选记录，自动跳过状态不适用的记录。')}</span></div>}
+    {selection.ids.size > 0 && <div className="bulk-actions">{children}</div>}
     {selection.busy && <p className="bulk-feedback" role="status">{t('处理中…')}</p>}
     {selection.error && <p className="bulk-feedback error-text" role="alert">{selection.error}</p>}
     {selection.result && <div className="bulk-feedback" role={selection.result.failed.length ? 'alert' : 'status'}>

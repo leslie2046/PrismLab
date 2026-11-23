@@ -13,7 +13,7 @@ def summarize_metrics(definitions, results):
                   and type(m.get('score')) in {int, float} and math.isfinite(m['score'])]
         scores[metric['id']] = {'mean': sum(values)/len(values) if values else None, 'scored': len(values),
                                'threshold':metric['threshold'], 'implementation_version':metric['implementation_version']}
-        if metric['id'] == 'rules.recall_at_k':
+        if metric['id'] in {'rules.recall_at_k', 'rules.precision_at_k'}:
             scores[metric['id']]['k'] = metric.get('k')
     return scores
 

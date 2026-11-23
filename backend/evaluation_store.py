@@ -14,6 +14,7 @@ from backend.evaluation_contracts import CONTRACT_VERSION, dependency_check, gen
 from backend.store import utc_now
 from backend.evaluation_jobs import EvaluationJobStore
 from backend.dataset_annotations import current_annotation
+from backend.dataset_quality import context_supports_question, quality_report
 from backend.evaluation_results import summarize_metrics
 
 EVALUATION_TABLE_COLUMNS = {
@@ -162,6 +163,9 @@ class EvaluationStore(EvaluationJobStore):
             annotation = current_annotation(sample, annotations.get(sample['id'], {}))
             contexts = sample.get('context') or []
             if isinstance(contexts, str): contexts = [contexts]
+            if contexts and not annotation.get('relevant_chunk_ids') and not context_supports_question(sample.get('input'), contexts):
+                sample['context'] = []
+                contexts = []
             matched = [str((chunk.get('metadata') or {}).get('segment_id') or chunk_id) for chunk_id, chunk in source_by_id.items()
                        if any(str(context).strip() and (str(context).strip() == str(chunk.get('content')).strip()
                                                         or str(context).strip() in str(chunk.get('content')).strip())
@@ -171,6 +175,11 @@ class EvaluationStore(EvaluationJobStore):
                 annotation['relevant_chunk_ids'] = list(dict.fromkeys(matched))
                 annotation['graded_relevance'] = annotation.get('graded_relevance') or {chunk_id: 1 for chunk_id in matched}
             sample['annotations'] = annotation
+        quality = quality_report(samples, source_snapshot)
+        # Freeze the report with the evidence so a reviewer can see why a
+        # retrieval score may need annotation review without changing the
+        # immutable labels after the run starts.
+        dataset['quality_report'] = quality
         samples = [safe_evidence(sample) for sample in samples]
         if not samples:
             raise HTTPException(400, '数据集没有启用的样本')
@@ -225,6 +234,7 @@ class EvaluationStore(EvaluationJobStore):
                 evidence = json.loads(row['evidence'])
                 summaries[run['id']] = {'metrics': summarize_metrics(evidence.get('metrics', []), metric_results[run['id']])}
             return [{**run, 'evaluation_type': evaluation_type(json.loads(row['evidence'])),
+                     'evidence': json.loads(row['evidence']),
                      'dataset_id': row['dataset_id'], 'dataset_version_id': row['dataset_version_id'],
                      'dataset_name': row['dataset_name'], 'summary': summaries[run['id']]}
                     for run, row in zip(runs, rows)]
@@ -261,7 +271,7 @@ class EvaluationStore(EvaluationJobStore):
                 raise HTTPException(400, '原评测没有可重新评测的样本')
 
             now, new_id = utc_now(), uuid.uuid4().hex
-            name = f"{original.get('name') or 'Quality evaluation'} · 重新评测"
+            name = original.get('name') or 'Quality evaluation'
             request_key = f"rerun:{run_id}:{new_id}"
             request_hash = fingerprint({'rerun_of': run_id, 'evidence': evidence, 'sample_ids': sample_ids})
             run = {'id': new_id, 'created_at': now, 'updated_at': now, 'status': 'prepared',

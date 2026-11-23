@@ -31,11 +31,42 @@ def read_dify_top_k(config, key):
     raise HTTPException(502, message)
 
 
+def read_dify_retrieval_model(config, key):
+    """Read the complete retrieval model while keeping the knowledge-base strategy."""
+    message = '无法读取 Dify 知识库的检索配置，请检查 Dataset API 权限后重试。'
+    try:
+        response = requests.get(
+            api_root(config['base_url']) + '/datasets/' + quote(config['dataset_id'], safe=''),
+            headers={'Authorization': 'Bearer ' + key} if key else {},
+            timeout=(3, 12), allow_redirects=False)
+        if not 200 <= response.status_code < 300 or len(response.content) > 2_000_000:
+            raise ValueError('invalid response')
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError('invalid response')
+        model = body.get('retrieval_model_dict') or body.get('retrieval_model')
+        if not isinstance(model, dict) or not model.get('search_method') or 'reranking_enable' not in model:
+            raise ValueError('missing retrieval model')
+        # Keep only the public Dify retrieval settings. Do not persist unknown
+        # response fields in the immutable evaluation evidence.
+        allowed = {'search_method', 'reranking_enable', 'reranking_mode', 'reranking_model',
+                   'weights', 'top_k', 'score_threshold_enabled', 'score_threshold'}
+        return {key: value for key, value in model.items() if key in allowed}
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        raise HTTPException(502, message) from None
+
+
 def recall_settings(target, metrics, resolve_access):
-    if target['benchmark'] != 'dify-retrieve' or not any(m['id'] == 'rules.recall_at_k' for m in metrics):
+    ranking_metrics = {'rules.recall_at_k', 'rules.precision_at_k', 'rules.mrr', 'rules.ndcg'}
+    if target['benchmark'] != 'dify-retrieve' or not any(m['id'] in ranking_metrics for m in metrics):
         return None
     if target.get('knowledge_bases'):
         return {'k': target['retrieval_top_k'], 'k_source': 'fusion'}
+    defaults = target.get('dify_retrieval_defaults') or []
+    if defaults and isinstance(defaults[0].get('model'), dict):
+        value = defaults[0]['model'].get('top_k')
+        if type(value) is int and value > 0:
+            return {'k': value, 'k_source': 'dify'}
     selection = target['selection']
     config, key = resolve_access(PlaygroundRequest(
         benchmark='dify-retrieve', provider_id=selection['id'], model=selection.get('model'),

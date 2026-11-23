@@ -19,10 +19,26 @@ function Score({result,language}:{result:MetricResult|undefined;language:Languag
   </span>;
 }
 
+function evidenceText(value:unknown, empty:string) {
+  if (value == null || value === '') return empty;
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const items = value.map(item => typeof item === 'string' ? item : JSON.stringify(item, null, 2));
+    return items.length ? items.join('\n\n') : empty;
+  }
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+}
+
+function evidenceItems(value:unknown) {
+  if (Array.isArray(value)) return value.map(item => evidenceText(item, '')).filter(Boolean);
+  if (value == null || value === '') return [];
+  return [evidenceText(value, '')];
+}
+
 export function EvaluationSamples({run,version,language}:{run:Evaluation;version:Version|null;language:Language}) {
   const t=(text:string)=>tr(language,text),retrieval=evaluationType(run.evidence)==='retrieval';
-  const [query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[sort,setSort]=useState('original'),[caseId,setCaseId]=useState<string|null>(null);
-  const content=useRef<HTMLDivElement>(null);
+  const [query,setQuery]=useState(''),[filter,setFilter]=useState('all'),[sort,setSort]=useState<string|null>(null),[caseId,setCaseId]=useState<string|null>(null);
+  const content=useRef<HTMLDivElement>(null),headerScroll=useRef<HTMLDivElement>(null);
   const samples=useMemo(()=>new Map(version?.samples.map(sample=>[sample.id,sample])||[]),[version]);
   const results=useMemo(()=>{
     const grouped=new Map<string,Map<string,MetricResult>>();
@@ -35,7 +51,7 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
       const matches=!query.trim()||`${sample?.input||''} ${item.sample_id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
       return matches&&(filter==='all'||filter==='not_passed'&&scores.some(result=>hasScore(result)&&result.passed===false)||filter==='failed'&&(item.status==='target_error'||scores.some(result=>result.status==='judge_error'))||filter==='missing_data'&&scores.some(result=>result.status==='missing_data'));
     });
-    if(sort!=='original'){
+    if(sort){
       const [direction,metricId]=sort.split('|');
       found.sort((a,b)=>{const first=results.get(a.id)?.get(metricId),second=results.get(b.id)?.get(metricId);const x=first&&hasScore(first)?first.score:null,y=second&&hasScore(second)?second.score:null;
         if(x==null)return y==null?0:1;if(y==null)return -1;return direction==='asc'?x-y:y-x;
@@ -47,18 +63,43 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
   const pageVisible=useMemo(()=>pageItems(visible,pagination.page,pagination.pageSize),[visible,pagination.page,pagination.pageSize]);
   const chosen=run.cases.find(item=>item.id===caseId),sample=chosen?samples.get(chosen.sample_id):undefined;
   const position=visible.findIndex(item=>item.id===caseId);
+  const evidenceFields=chosen ? [
+    {label:t('参考答案'), value:sample?.expected_output},
+    ...(!retrieval ? [{label:t('实际回答'), value:chosen.observation?.actual_output}] : []),
+    {label:t('参考资料'), value:evidenceText(sample?.context,t('未提供')) + (() => {
+      const relevantIds=evidenceItems(sample?.annotations?.relevant_chunk_ids);
+      const graded=sample?.annotations?.graded_relevance;
+      const grades=graded && typeof graded === 'object' && !Array.isArray(graded) ? graded as Record<string,unknown> : {};
+      if (!relevantIds.length && !Object.keys(grades).length) return '';
+      const labels=relevantIds.length ? relevantIds : Object.keys(grades);
+      return `\n\n${t('相关片段标注')}\n${labels.map(id=>`${id}${grades[id] == null ? '' : `（${t('权重')}：${grades[id]}）`}`).join('\n')}`;
+    })()},
+    {label:t('实际召回'), value:(() => {
+      const contexts=evidenceItems(chosen.observation?.retrieval_context);
+      const ids=evidenceItems(chosen.observation?.retrieved_chunk_ids);
+      if (!contexts.length) return ids.length ? ids.map(id=>`${t('片段 ID')}：${id}`).join('\n') : undefined;
+      return contexts.map((context,index)=>`${ids[index] ? `${t('片段 ID')}：${ids[index]}\n` : ''}${context}`).join('\n\n');
+    })()},
+  ] : [];
+  const columns=run.evidence.metrics.length+3;
+  const tableColumns=()=> <colgroup><col style={{width:'40%'}}/>{Array.from({length:columns-1},(_,index)=><col key={index} style={{width:`${60/(columns-1)}%`}}/>)}</colgroup>;
+  const toggleSort=(metricId:string)=>setSort(current=>{const [direction,currentId]=current?.split('|')||[]; return currentId===metricId&&direction==='asc'?`desc|${metricId}`:`asc|${metricId}`;});
+  const sortHeader=(metric:{id:string})=>{const active=sort?.split('|')[1]===metric.id; const direction=sort?.split('|')[0]; return <button type="button" className="evaluation-sort-button" onClick={()=>toggleSort(metric.id)} aria-label={`${t(metricName(metric))}${active?`，${direction==='asc'?t('升序'):t('降序')}`:''}`}>{t(metricName(metric))}{active&&<span aria-hidden="true"> {direction==='asc'?'↑':'↓'}</span>}</button>};
+  const tableHeader=()=> <tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{sortHeader(metric)}</th>)}<th scope="col">{t('耗时')}</th></tr>;
+  const syncHeaderScroll=(event:React.UIEvent<HTMLDivElement>)=>{if(headerScroll.current)headerScroll.current.scrollLeft=event.currentTarget.scrollLeft};
   useEffect(()=>{content.current?.scrollTo(0,0)},[caseId]);
   return <section className="evaluation-samples" aria-label={t('样本明细')}>
-    <div className="evaluation-section-title"><h3>{t('样本明细')}</h3><span>{t('显示')} {visible.length} / {run.cases.length} {t('样本')}</span></div>
     <div className="evaluation-sample-toolbar">
+      <label className="filter-control"><select aria-label={t('结果筛选')} value={filter} onChange={event=>setFilter(event.target.value)}>{[['all','全部结果'],['not_passed','未通过'],['failed','执行失败'],['missing_data','不可计算']].map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>
       <label className="evaluation-search"><Search aria-hidden="true"/><input aria-label={t('搜索样本问题')} placeholder={t('搜索样本问题')} value={query} onChange={event=>setQuery(event.target.value)}/></label>
-      <label className="field"><span>{t('结果筛选')}</span><select aria-label={t('结果筛选')} value={filter} onChange={event=>setFilter(event.target.value)}>{[['all','全部'],['not_passed','未通过'],['failed','执行失败'],['missing_data','不可计算']].map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>
-      <label className="field"><span>{t('样本排序')}</span><select aria-label={t('样本排序')} value={sort} onChange={event=>setSort(event.target.value)}><option value="original">{t('原始顺序')}</option>{run.evidence.metrics.flatMap(metric=>['asc','desc'].map(direction=><option key={metric.id+direction} value={`${direction}|${metric.id}`}>{t(metricName(metric))} · {t(direction==='asc'?'低分优先':'高分优先')}</option>))}</select></label>
     </div>
-    <div className="evaluation-table-scroll evaluation-sample-matrix" tabIndex={0} aria-label={t('样本指标得分表')}><table className="data-table"><thead><tr><th scope="col">{t('问题')}</th><th scope="col">{t('状态')}</th>{run.evidence.metrics.map(metric=><th scope="col" key={metric.id}>{t(metricName(metric))}</th>)}<th scope="col">{t('耗时')}</th></tr></thead><tbody>{pageVisible.map(item=>{
-      const scores=results.get(item.id),question=samples.get(item.sample_id)?.input||item.sample_id;
-      return <tr key={item.id} data-case-id={item.id}><td><button className="evaluation-question" onClick={()=>setCaseId(item.id)} title={question}>{question}</button></td><td><EvaluationStatus status={caseVerdict(item,[...(scores?.values()||[])],run.evidence.metrics.length)} language={language}/></td>{run.evidence.metrics.map(metric=><td key={metric.id}><Score result={scores?.get(metric.id)} language={language}/></td>)}<td>{item.observation?.duration_ms==null?'—':`${item.observation.duration_ms.toLocaleString(language)} ms`}</td></tr>;
-    })}</tbody></table></div>
+    <div className="evaluation-sample-matrix" aria-label={t('样本指标得分表')}>
+      <div className="evaluation-sample-header-scroll" ref={headerScroll} aria-hidden="true"><table className="data-table">{tableColumns()}<thead>{tableHeader()}</thead></table></div>
+      <div className="evaluation-sample-body-scroll" tabIndex={0} onScroll={syncHeaderScroll}><table className="data-table">{tableColumns()}<thead className="evaluation-sample-accessible-head">{tableHeader()}</thead><tbody>{pageVisible.map(item=>{
+        const scores=results.get(item.id),question=samples.get(item.sample_id)?.input||item.sample_id;
+        return <tr key={item.id} data-case-id={item.id}><td><button className="evaluation-question" onClick={()=>setCaseId(item.id)} title={question}>{question}</button></td><td><EvaluationStatus status={caseVerdict(item,[...(scores?.values()||[])],run.evidence.metrics.length)} language={language}/></td>{run.evidence.metrics.map(metric=><td key={metric.id}><Score result={scores?.get(metric.id)} language={language}/></td>)}<td>{item.observation?.duration_ms==null?'—':`${item.observation.duration_ms.toLocaleString(language)} ms`}</td></tr>;
+      })}</tbody></table></div>
+    </div>
     {visible.length>0&&<Pagination {...pagination} total={visible.length} language={language} label={t('样本')} pageSizes={[10,20,50]} />}
     {!visible.length&&<p className="dify-empty">{t('没有匹配的样本')}</p>}
     {chosen&&<WorkspaceDialog title={t('样本详情')} busy={false} language={language} onClose={()=>setCaseId(null)} className="evaluation-sample-drawer">
@@ -74,7 +115,7 @@ export function EvaluationSamples({run,version,language}:{run:Evaluation;version
           </article>;
         })}{!run.evidence.metrics.length&&<p>{t('本次评测未配置评分指标。')}</p>}</section>
         {chosen.error&&<p className="alert" role="alert">{t(evaluationFailures[chosen.error]||chosen.error)}</p>}
-        <div className="evaluation-evidence-grid">{[[t('参考答案'),sample?.expected_output],...(!retrieval?[[t('实际回答'),chosen.observation?.actual_output]]:[]),[t('参考资料'),sample?.context?.join('\n\n')],[t('实际召回'),chosen.observation?.retrieval_context?.join('\n\n')],...(retrieval?[[t('实际片段 ID'),chosen.observation?.retrieved_chunk_ids?.join('\n')],[t('相关片段标注'),JSON.stringify(sample?.annotations?.relevant_chunk_ids||[])],[t('分级相关性标注'),JSON.stringify(sample?.annotations?.graded_relevance||{})]]:[])].map(([label,value])=><section key={label}><h3>{label}</h3><pre>{value||t('未提供')}</pre></section>)}</div>
+        <div className="evaluation-evidence-grid">{evidenceFields.map(({label,value})=><section className="evaluation-evidence-card" key={label}><h3>{label}</h3><pre>{evidenceText(value,t('未提供'))}</pre></section>)}</div>
         {sample?.scenario!=null&&<details><summary>{t('场景配置')}</summary><pre>{JSON.stringify(sample.scenario,null,2)}</pre></details>}
         {chosen.observation?.turns!=null&&<details><summary>{t('实际对话轮次')}</summary><pre>{JSON.stringify(chosen.observation.turns,null,2)}</pre></details>}
         {chosen.observation?.tools_called!=null&&<details><summary>{t('实际工具轨迹')}</summary><pre>{JSON.stringify(chosen.observation.tools_called,null,2)}</pre></details>}

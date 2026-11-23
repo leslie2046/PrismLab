@@ -5,6 +5,7 @@ import { tr, type Language } from '../i18n';
 import { datasetApi, embeddingChoices, llmChoices, rerankerChoices, selectionValue } from '../datasetApi';
 import { SearchableSelect } from './SearchableSelect';
 import { InfoTip } from './InfoTip';
+import { api } from '../api';
 
 type SettingsSection = 'generation' | 'evaluation';
 function PromptEditor({ label, tip, value, defaultValue, disabled, readOnly, language, onChange }: {
@@ -23,6 +24,10 @@ function PromptEditor({ label, tip, value, defaultValue, disabled, readOnly, lan
 export function DatasetSettings({ catalog, language, readOnly, section = 'generation' }: { catalog: Catalog | null; language: Language; readOnly: boolean; section?: string }) {
   const t = (value: string) => tr(language, value);
   const [selected, setSelected] = useState('');
+  const [thinkingMode, setThinkingMode] = useState<'auto' | 'enabled' | 'disabled'>('auto');
+  const [criticThinkingMode, setCriticThinkingMode] = useState<'auto' | 'enabled' | 'disabled'>('auto');
+  const [judgeThinkingMode, setJudgeThinkingMode] = useState<'auto' | 'enabled' | 'disabled'>('auto');
+  const [thinkingSupported, setThinkingSupported] = useState<boolean | null>(null);
   const [embedding, setEmbedding] = useState('');
   const [critic, setCritic] = useState('');
   const [concurrency, setConcurrency] = useState('3');
@@ -46,6 +51,15 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
   const [saved, setSaved] = useState({ generation: false, evaluation: false });
   const [reload, setReload] = useState(0);
   const choices = llmChoices(catalog, language);
+  useEffect(() => {
+    if (!selected) { setThinkingSupported(null); return; }
+    let active = true;
+    try {
+      const selection = JSON.parse(selected);
+      api.llmParameters(selection).then(value => { if (active) setThinkingSupported(Boolean(value.parameters.thinking_mode)); }).catch(() => { if (active) setThinkingSupported(null); });
+    } catch { setThinkingSupported(null); }
+    return () => { active = false; };
+  }, [selected]);
   const embeddings = embeddingChoices(catalog, language);
   const rerankers = rerankerChoices(catalog, language);
   const staleReranker = !!catalog && !!reranker && !rerankers.some(choice => choice.value === reranker);
@@ -64,6 +78,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
     setLoading(true); setLoadError('');
     datasetApi.settings().then(value => { if (active) {
       setSelected(selectionValue(value.default_llm)); setEmbedding(selectionValue(value.default_embedding_model)); setCritic(selectionValue(value.default_critic_llm));
+      setThinkingMode(value.generation_thinking_mode || 'auto'); setCriticThinkingMode(value.critic_thinking_mode || 'auto'); setJudgeThinkingMode(value.judge_thinking_mode || 'auto');
       setConcurrency(String(value.max_concurrent ?? 3));
       setPrompt(value.prompt); setDefaultPrompt(value.default_prompt); setCriticPrompt(value.critic_prompt); setDefaultCriticPrompt(value.default_critic_prompt);
       setJudge(selectionValue(value.default_judge_llm)); setScoringEngine(value.scoring_engine); setJudgePrompt(value.judge_prompt); setDefaultJudgePrompt(value.default_judge_prompt); setLoaded(true);
@@ -80,6 +95,8 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
     try {
       await datasetApi.saveSettings(which === 'generation' ? {
         max_concurrent: Number(concurrency),
+        generation_thinking_mode: thinkingMode,
+        critic_thinking_mode: criticThinkingMode,
         default_llm: selected ? JSON.parse(selected) : null,
         default_embedding_model: embedding ? JSON.parse(embedding) : null,
         default_critic_llm: critic ? JSON.parse(critic) : null,
@@ -87,6 +104,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
         critic_prompt: criticPrompt === defaultCriticPrompt ? null : criticPrompt,
       } : {
         evaluation_max_concurrent: Number(evaluationConcurrency),
+        judge_thinking_mode: judgeThinkingMode,
         evaluation_max_requests: Number(evaluationMaxRequests),
         evaluation_max_output_tokens: Number(evaluationMaxOutputTokens),
         default_judge_llm: judge ? JSON.parse(judge) : null,
@@ -113,6 +131,10 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
           {stale && <small className="error-text" role="alert">{t('原默认模型已失效，请重新选择')}</small>}
           {catalog && !choices.length && <small className="field-help">{t('暂无已配置的 LLM，请先在模型供应商中添加。')}</small>}
         </div>
+        <label className="field"><span className="label-with-tip">{t('思考模式')}<InfoTip label={t('查看说明')} text={t('应用于支持思考模式的模型，例如 Qwen3。自动表示由模型服务决定。')} /></span>
+          <select aria-label={t('思考模式')} disabled={disabled || thinkingSupported === false} value={thinkingSupported === false ? 'auto' : thinkingMode} onChange={event => { setThinkingMode(event.target.value as 'auto' | 'enabled' | 'disabled'); changed('generation'); }}><option value="auto">{t('自动')}</option><option value="enabled">{t('开启')}</option><option value="disabled">{t('关闭')}</option></select>
+          {thinkingSupported === false && <small className="field-help">{t('当前模型未声明支持思考模式，已使用模型默认行为。')}</small>}
+        </label>
         <div className="field"><span className="label-with-tip">{t('默认嵌入模型')}<span className="space-settings-tag">RAGAS</span><InfoTip label={t('查看说明')} text={t('用于 RAGAS 根据资料构建知识图谱和生成样本。构建时可单独选择嵌入模型，未选择时使用此配置。保存配置不会调用模型。')} /></span>
           <SearchableSelect label={t('默认嵌入模型')} language={language} value={embedding} disabled={disabled} onChange={value => { setEmbedding(value); changed('generation'); }} options={[{ value: '', label: t('未设置（构建时选择）') }, ...embeddings]} />
           {staleEmbedding && <small className="error-text" role="alert">{t('原嵌入模型已失效，请重新选择')}</small>}
@@ -122,6 +144,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
           <SearchableSelect label={t('数据集生成质量评审模型')} language={language} value={critic} disabled={disabled} onChange={value => { setCritic(value); changed('generation'); }} options={[{ value: '', label: t('与生成模型相同') }, ...choices]} />
           {staleCritic && <small className="error-text" role="alert">{t('原质量评审模型已失效，请重新选择')}</small>}
         </div>
+        <label className="field"><span>{t('质量评审思考模式')}</span><select aria-label={t('质量评审思考模式')} disabled={disabled} value={criticThinkingMode} onChange={event => { setCriticThinkingMode(event.target.value as 'auto' | 'enabled' | 'disabled'); changed('generation'); }}><option value="auto">{t('自动')}</option><option value="enabled">{t('开启')}</option><option value="disabled">{t('关闭')}</option></select></label>
         <label className="field"><span className="label-with-tip">{t('模型并发上限')}<span className="space-settings-tag">DeepEval / RAGAS</span><InfoTip label={t('模型并发上限说明')} text={t('范围 1–10，默认 3。控制每个数据集生成任务的模型并发。新建、追加、重新构建及失败重试统一使用当前空间配置，不支持在数据集内覆盖；已运行的任务不受影响。较大可能触发服务限流。')} /></span>
           <input type="number" aria-label={t('模型并发上限')} min={1} max={10} step={1} disabled={disabled} value={concurrency} onChange={event => { setConcurrency(event.target.value); changed('generation'); }} />
           {loaded && invalidConcurrency && <small className="error-text" role="alert">{t('请输入 1–10 之间的整数。')}</small>}
@@ -144,6 +167,7 @@ export function DatasetSettings({ catalog, language, readOnly, section = 'genera
           <SearchableSelect label={t('结果评分模型')} language={language} value={judge} disabled={disabled} onChange={value => { setJudge(value); changed('evaluation'); }} options={[{ value: '', label: t('未设置（准备评测时选择）') }, ...choices]} />
           {staleJudge && <small className="error-text" role="alert">{t('原结果评分模型已失效，请重新选择')}</small>}
         </div>
+        <label className="field"><span>{t('评测思考模式')}</span><select aria-label={t('评测思考模式')} disabled={disabled} value={judgeThinkingMode} onChange={event => { setJudgeThinkingMode(event.target.value as 'auto' | 'enabled' | 'disabled'); changed('evaluation'); }}><option value="auto">{t('自动')}</option><option value="enabled">{t('开启')}</option><option value="disabled">{t('关闭')}</option></select></label>
         <div className="field"><span className="label-with-tip">{t('默认重排模型（Reranker）')}<InfoTip label={t('查看说明')} text={t('用于检索评测合并多个知识库的召回结果后统一重排。新建评测时默认选中此模型，也可单独更换；保存配置不会调用模型。')} /></span>
           <SearchableSelect label={t('默认重排模型（Reranker）')} language={language} value={reranker} disabled={disabled} onChange={value => { setReranker(value); changed('evaluation'); }} options={[{value:'',label:t('未设置（准备评测时选择）')},...rerankers]} />
           {staleReranker && <small className="error-text" role="alert">{t('原重排模型已失效，请重新选择')}</small>}

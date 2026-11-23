@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { AlertCircle, Eye, EyeOff, Languages, LoaderCircle, LogIn, Moon, ShieldCheck, Sun } from "lucide-react";
+import { AlertCircle, Eye, EyeOff, LoaderCircle, LogIn, ShieldCheck } from "lucide-react";
 import type { AuthStatus } from "../auth";
 import { tr, type Language } from "../i18n";
 import { BrandLogo } from "./BrandLogo";
@@ -17,8 +17,8 @@ export function LoginPage({ status, loading, unavailable, onRetry, onLogin }: {
   onRetry: () => void;
   onLogin: (status: AuthStatus) => void;
 }) {
-  const [language, setLanguage] = useState<Language>(() => localStorage.getItem("perflab-language") === "en" ? "en" : "zh-CN");
-  const [dark, setDark] = useState(() => {
+  const [language] = useState<Language>(() => localStorage.getItem("perflab-language") === "en" ? "en" : "zh-CN");
+  const [dark] = useState(() => {
     const saved = localStorage.getItem("perflab-theme");
     return saved === "dark" || (saved !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   });
@@ -69,10 +69,6 @@ export function LoginPage({ status, loading, unavailable, onRetry, onLogin }: {
   return <main className="login-page">
     <header className="login-header">
       <a className="login-brand" href="/" aria-label="PrismLab"><BrandLogo /><strong>PrismLab</strong></a>
-      <div className="preferences">
-        <button type="button" className="icon-button" aria-label={t("切换语言")} title={t("切换语言")} onClick={() => setLanguage(language === "zh-CN" ? "en" : "zh-CN")}><Languages aria-hidden="true" /></button>
-        <button type="button" className="icon-button" aria-label={t("切换主题")} title={t("切换主题")} onClick={() => { localStorage.setItem("perflab-theme", dark ? "light" : "dark"); setDark(!dark); }}>{dark ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button>
-      </div>
     </header>
     <div className="login-body"><aside className="login-context"><span className="login-context-label">PrismLab Workspace</span><h2>{t('让每一次模型选择，都有据可依。')}</h2><p>{t('从模型调试、性能测试到 RAG 质量评测，在同一个工作空间完成。')}</p><div className="login-capabilities"><span>Playground</span><span>{t('性能测试')}</span><span>{t('评测数据集')}</span></div></aside>
       <section className="login-panel" aria-labelledby="login-title" aria-busy={loading || busy}>

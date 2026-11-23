@@ -20,7 +20,7 @@ uv run --no-sync python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 等待数据库就绪后启动 API。默认连接 URL 与上例一致；数据库和账户须预先创建，后端启动时自动建表。数据库不可连接时 API 启动失败，不回退 SQLite。后端不自动读取 `.env`，请使用进程环境变量；systemd 部署需在服务环境中设置 `DATABASE_URL`。URL 中的密码包含特殊字符时须进行 URL 编码，也可使用 psycopg 支持的 libpq conninfo 字符串。
 
-上例密码仅用于本机开发。部署时更换强密码、限制网络访问，远程连接按环境要求配置 TLS。保留单 API 实例、单 worker：PostgreSQL 行锁保护同一运行记录的 AI 报告并发，但不会将内存中的计划调度和任务管理变成分布式服务。
+上例密码仅用于本机开发。部署时更换强密码、限制网络访问，远程连接按环境要求配置 TLS。保留单 API 实例、单 worker：计划调度仍由 API 进程负责，性能、数据集和 AI 报告任务通过 PostgreSQL 持久队列交给后台 worker。
 
 ## Docker Compose
 

@@ -19,7 +19,7 @@ function readAudio(file: File): Promise<string> {
   });
 }
 
-export function Playground({ catalog, language }: { catalog: Catalog | null; language: Language }) {
+export function Playground({ catalog, language, initialDraft, onDraftConsumed }: { catalog: Catalog | null; language: Language; initialDraft?: {systemPrompt: string; query: string; providerId?: string; model?: string; credentialId?: string; parameters: Record<string, string | number>} | null; onDraftConsumed?: () => void }) {
   const t = (value: string) => tr(language, value);
   const [benchmarkId, setBenchmarkId] = useState("llm");
   const [providerId, setProviderId] = useState("");
@@ -35,6 +35,8 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [parameters, setParameters] = useState<Record<string, string | number>>({});
+  const draftParameters = useRef<Record<string, string | number> | null>(null);
+  const draftTarget = useRef<{providerId?: string; model?: string; credentialId?: string} | null>(null);
   const [definition, setDefinition] = useState<LlmParameters | null>(null);
   const [parameterLoading, setParameterLoading] = useState(false);
   const [parameterError, setParameterError] = useState("");
@@ -51,6 +53,27 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
   const controller = useRef<AbortController | null>(null);
   const activeRequest = useRef(0);
   useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    let draft = initialDraft;
+    if (!draft) {
+      try {
+        const stored = sessionStorage.getItem("prismlab-playground-draft");
+        draft = stored ? JSON.parse(stored) : null;
+      } catch { draft = null; }
+    }
+    if (!draft) return;
+    sessionStorage.removeItem("prismlab-playground-draft");
+    setBenchmarkId("llm");
+    draftParameters.current = draft.parameters || {};
+    draftTarget.current = { providerId: draft.providerId, model: draft.model, credentialId: draft.credentialId };
+    setProviderId(draft.providerId || "");
+    setModelName(draft.model || "");
+    setCredentialId(draft.credentialId || "");
+    setSystemPrompt(draft.systemPrompt || "");
+    setQueries(current => ({ ...current, llm: draft.query || "" }));
+    setParameters(draft.parameters || {});
+    onDraftConsumed?.();
+  }, [initialDraft, onDraftConsumed]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 768px)");
     const update = () => setSettingsOpen(!media.matches);
@@ -79,6 +102,25 @@ export function Playground({ catalog, language }: { catalog: Catalog | null; lan
           ? t("上游响应发生错误或连接中断，已收到的内容已保留。")
           : t("上游流在结束标记前关闭，以下内容可能不完整。");
   const hasResponse = !!(result || streamText || reasoningText || error || stopped || busy);
+  useEffect(() => {
+    if (!definition || !draftParameters.current) return;
+    if (definition.model && model && definition.model !== model) return;
+    const target = draftTarget.current;
+    const providerKnown = !!target?.providerId && providers.some(item => item.id === target.providerId);
+    const modelKnown = !!target?.model && models.some(item => (item.alias || item.name) === target.model);
+    const credentialKnown = !!target?.credentialId && credentials.some(item => item.id === target.credentialId);
+    if (providerKnown && target?.providerId !== provider?.id) return;
+    if (modelKnown && target?.model !== model) return;
+    if (credentialKnown && target?.credentialId !== credentialId) return;
+    const pending = draftParameters.current;
+    const valid = Object.fromEntries(Object.entries(pending).filter(([name, input]) => {
+      const spec = definition.parameters[name];
+      return spec && (spec.type === "enum" ? spec.values.includes(String(input)) : typeof input === "number" && Number.isFinite(input) && input >= (spec.min ?? -Infinity) && input <= (spec.max ?? Infinity) && (spec.type !== "integer" || Number.isInteger(input)));
+    }));
+    setParameters(valid);
+    draftParameters.current = null;
+    draftTarget.current = null;
+  }, [definition, provider?.id, model, credentialId, providers, models, credentials]);
   function clearResponse() {
     setResult(null); setStreamText(""); setReasoningText(""); setStreamTtft(null);
     setStopped(false); setError(""); setSentPrompt(""); setCopyNotice(""); followOutput.current = true;

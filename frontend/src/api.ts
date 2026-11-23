@@ -123,7 +123,7 @@ async function loadDashboardRuns(signal: AbortSignal, planId?: string): Promise<
   for (let page = 1; ; page++) {
     // Never combine pages from different workspaces or return a partial history.
     if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
-    const result = await request<PageResult<Run>>(`/api/runs?${listQuery(page, 100, {plan_id: planId})}`, { signal });
+    const result = await request<PageResult<Run>>(`/api/runs?${listQuery(page, 100, {plan_id: planId})}&compact=1`, { signal });
     if (signal.aborted || workspaceId !== activeWorkspace) throw new DOMException('Aborted', 'AbortError');
     result.items.forEach(run => runs.set(run.id, run));
     if (page * result.page_size >= result.total || result.page < page) break;
@@ -152,10 +152,13 @@ export const api = {
   runSelection: (filters: ListFilters) => request<SelectionSnapshot>(`/api/runs/selection?${listQuery(1, 1, filters)}`),
   bulkPlans: (action: 'start' | 'pause' | 'stop' | 'delete', ids: string[]) => requestBulk('/api/plans/bulk', action, ids),
   bulkRuns: (action: 'cancel' | 'delete', ids: string[]) => requestBulk('/api/runs/bulk', action, ids),
-  runs: () => request<Run[]>("/api/runs"),
+  bulkRunPlanGroups: (action: 'delete', ids: string[]) => requestBulk('/api/run-plan-groups/bulk', action, ids),
+  // App-level summaries only need run/scenario metrics. Detailed request
+  // samples are loaded by the dedicated run endpoints when a view needs them.
+  runs: (compact = true) => request<Run[]>(`/api/runs?limit=30${compact ? '&compact=1' : ''}`),
   run: (id: string, signal?: AbortSignal) => request<Run>(`/api/runs/${encodeURIComponent(id)}`, {signal}),
   dashboardRuns: loadDashboardRuns,
-  runPlanGroups: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<RunPlanGroup>>(`/api/run-plan-groups?${listQuery(page, size, filters)}`, { signal }),
+  runPlanGroups: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<RunPlanGroup>>(`/api/run-plan-groups?${listQuery(page, size, filters)}&compact=1`, { signal }),
   plans: () => request<TestPlan[]>("/api/plans"),
   runsPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<Run>>(`/api/runs?${listQuery(page, size, filters)}`, { signal }),
   plansPage: (page: number, size: number, signal: AbortSignal, filters: ListFilters = {}) => request<PageResult<TestPlan>>(`/api/plans?${listQuery(page, size, filters)}`, { signal }),
@@ -199,6 +202,7 @@ export const api = {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, enabled }),
   }),
   deleteServiceConfig: (id: string) => request<void>(`/api/service-configs/${id}`, { method: "DELETE" }),
+  bulkServiceConfigs: (action: 'delete', ids: string[]) => requestBulk('/api/service-configs/bulk', action, ids),
 };
 
 export function subscribeToRun(id: string, onRun: (run: Run) => void, onError: () => void) {

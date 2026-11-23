@@ -55,6 +55,7 @@
   --radius-panel: 12px;
   --shadow-control: 0 1px 2px #1018280d;
   --shadow-overlay: 0 18px 50px #16192324;
+  --workspace-sidebar-width: 224px;
 }
 
 :root[data-theme="dark"] {
@@ -111,7 +112,7 @@ h1 { font-size: 21px; line-height: 1.25; font-weight: 650; letter-spacing: -.02e
 h2 { font-size: 15px; line-height: 1.35; font-weight: 650; letter-spacing: -.01em; }
 a { color: inherit; }
 
-.app-shell { min-height: 100vh; display: grid; grid-template-columns: 224px minmax(0, 1fr); }
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr); }
 .sidebar { position: sticky; z-index: 30; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; padding: 18px 12px 14px; border-right: 1px solid var(--sidebar-border); background: var(--sidebar); color: var(--sidebar-foreground); }
 .sidebar-scrim { display: none; }
 .brand { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 9px; margin-bottom: 18px; }
@@ -134,7 +135,12 @@ nav button svg { color: var(--muted-foreground); }
 nav button:hover { background: var(--surface-subtle); color: var(--foreground); }
 nav button.active { background: var(--sidebar-accent); color: var(--foreground); font-weight: 600; box-shadow: 0 1px 3px #0000000a; }
 nav button.active svg { color: var(--primary); }
-.sidebar-foot { display: flex; align-items: center; flex-shrink: 0; gap: 8px; margin-top: auto; padding: 10px; border-top: 1px solid var(--sidebar-border); color: var(--muted-foreground); font-size: 10px; }
+.sidebar-foot { display: grid; flex-shrink: 0; gap: 4px; margin-top: auto; padding: 10px; border-top: 1px solid var(--sidebar-border); color: var(--muted-foreground); font-size: 10px; }
+.sidebar-account-row { min-width: 0; }
+.sidebar-preferences-row { display: flex; align-items: center; min-width: 0; gap: 4px; }
+.sidebar-preferences-row .preferences { gap: 2px; }
+.sidebar-preferences-row .preference-control { width: 34px; height: 34px; border-color: transparent; background: transparent; }
+.sidebar-preferences-row .preference-control:hover, .sidebar-preferences-row .preference-control:focus-within { border-color: var(--sidebar-border); background: var(--surface-subtle); }
 
 main { min-width: 0; }
 .topbar { position: sticky; z-index: 20; top: 0; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 10px clamp(18px, 2.5vw, 34px); border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -223,7 +229,7 @@ main { min-width: 0; }
 .plan-table .error-text { max-width: 220px; margin-top: 3px; white-space: normal; }
 .row-actions { display: flex; align-items: center; gap: 5px; }
 .compact-empty { min-height: 76px; }
-.list-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.list-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; border-bottom: 0; }
 .list-search { display: flex; align-items: center; gap: 8px; width: min(320px, 100%); min-width: 180px; height: 36px; padding: 0 10px; border: 1px solid var(--input); border-radius: 6px; background: var(--surface); color: var(--muted-foreground); }
 .list-search:focus-within { border-color: var(--primary); outline: 2px solid var(--ring); outline-offset: 1px; }
 .list-search svg { width: 14px; height: 14px; flex: none; }
@@ -547,6 +553,8 @@ td small { display: block; margin-top: 1px; color: var(--muted-foreground); font
 .dify-dataset-dialog { width: min(720px, calc(100vw - 40px)); }
 .dify-dataset-dialog .dify-modal-body { min-height: 0; }
 .dify-dataset-dialog .dify-modal-footer { flex-shrink: 0; }
+.dify-dataset-dialog .dify-discovery-list { min-height: 220px; height: min(280px, 34vh); }
+.dify-dataset-dialog .dify-discovery-scroll { max-height: none; flex: 1 1 auto; }
 .dify-dataset-dialog .dify-discovery-actions [aria-pressed="true"] { border-color: var(--primary); background: var(--accent); color: var(--primary); }
 .dify-dataset-dialog .dify-dialog-error { white-space: pre-line; overflow-wrap: anywhere; max-height: 120px; overflow-y: auto; flex-shrink: 0; }
 .dify-dataset-choice { display: grid; gap: 3px; }
@@ -605,7 +613,12 @@ td small { display: block; margin-top: 1px; color: var(--muted-foreground); font
   .config-panel { width: 100%; }
 }
 
+@media (max-width: 1024px) {
+  :root { --workspace-sidebar-width: 200px; }
+}
+
 @media (max-width: 800px) {
+  :root { --workspace-sidebar-width: 240px; }
   .app-shell { display: block; }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: 240px; height: 100dvh; transform: translateX(-100%); transition: transform .18s ease; box-shadow: var(--shadow-overlay); }
   .sidebar.open { transform: translateX(0); }

@@ -64,6 +64,7 @@ class EvaluationTypeTests(unittest.TestCase):
                 'options':json.dumps({'size':1,'llm':self.selection})},files={'files':('source.txt',b'Source text')})
         self.assertEqual(response.status_code,202,response.text)
         self.assertEqual(response.json()['evaluation_purpose'],'retrieval')
+        self.assertEqual(response.json()['generation_options']['context_size'], 2)
         build.assert_called_once()
         self.retrieval_request()
         target=MagicMock(status_code=200,content=b'{}');target.json.return_value={'records':[]}

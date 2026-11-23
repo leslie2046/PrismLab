@@ -136,11 +136,22 @@ export type Dataset = {
   source_type: 'manual' | 'import' | 'documents' | 'dify' | 'goldens' | 'scratch'; item_count: number; target_size?: number;
   llm?: LlmSelection; sdk?: string; sdk_version?: string; generation_usage?: { requests: number; output_tokens: number; cost: number | null }; source_chunk_count?: number; error?: string | null; created_at: string; updated_at: string;
   data_sources?: DatasetSource[]; dify_config_id?: string | null; dify_config_ids?: string[]; generation_config?: DatasetGenerationOptions; generation_options?: DatasetGenerationOptions;
+  generation_system_prompt?: string;
   build_mode?: 'append' | 'replace_generated' | 'regenerate_answers'; build_progress?: number; build_target?: number;
   build_retry_count?: number; build_retry_limit?: number; build_last_error?: string | null;
   build_stage?: string; build_requests?: number; build_active_requests?: number; build_output_tokens?: number;
   build_started_at?: string; build_request_started_at?: string | null;
-  latest_evaluation?: DatasetEvaluationSummary | null;
+  latest_evaluation?: DatasetEvaluationSummary | null; evaluation_config?: import('./evaluationApi').EvaluationConfig;
+  quality_report?: DatasetQualityReport;
+};
+export type DatasetQualityReport = {
+  has_warnings: boolean;
+  duplicate_count: number;
+  duplicate_sample_count?: number;
+  annotation_warning_count: number;
+  annotation_warning_sample_count?: number;
+  duplicate_candidates: Array<{ left_id?: string; right_id?: string; left_input?: string; right_input?: string; similarity: number }>;
+  annotation_warnings: Array<{ sample_id?: string; input?: string; annotated_chunk_ids: string[]; candidate_chunk_ids: string[]; candidates?: Array<{ chunk_id: string; content_preview?: string }> }>;
 };
 export type DatasetGenerationOptions = {
   generation_backend?: 'deepeval' | 'ragas' | 'ragas_native'; embedding_model?: LlmSelection | null; ragas_query_distribution?:Record<string,number>; ragas_personas?:Array<{name:string;role_description:string}>; size?: number; method?: 'contexts' | 'goldens' | 'scratch'; llm?: LlmSelection | null; critic_llm?: LlmSelection | null;
@@ -148,6 +159,7 @@ export type DatasetGenerationOptions = {
   include_expected_output?: boolean; quality_threshold?: number; max_quality_retries?: number; num_evolutions?: number;
   max_concurrent?: number; context_size?: number; evolutions?: Record<string, number>;
   task?: string; scenario?: string; input_format?: string; expected_output_format?: string;
+  system_prompt_override?: string | null;
 };
 export type DatasetSource = { kind: 'documents' | 'dify' | 'import' | 'manual' | 'goldens' | 'scratch'; name: string; chunk_count: number; config_id?: string; dataset_id?: string };
 export type DatasetSources = { items: DatasetSource[]; revision: number; dify_config_id?: string | null; dify_config_ids?: string[]; synced_at?: string | null };
@@ -164,14 +176,17 @@ export type DatasetItem = Golden & {
   generation_trace_id?: string; generation_record_id?: string;
   id: string; dataset_id: string; origin?: 'manual' | 'import' | 'generated'; status: 'active' | 'archived'; created_at: string; updated_at: string;
 };
-export type DatasetSettings = { default_reranker?: LlmSelection | null; max_concurrent: number; evaluation_max_concurrent: number; evaluation_max_requests: number; evaluation_max_output_tokens: number; default_embedding_model: LlmSelection | null; default_judge_llm: LlmSelection | null; scoring_engine: 'deepeval' | 'ragas'; judge_prompt: string; default_judge_prompt: string; default_llm: LlmSelection | null; default_critic_llm: LlmSelection | null; prompt: string; default_prompt: string; critic_prompt: string; default_critic_prompt: string };
+export type DatasetSettings = { generation_thinking_mode?: 'auto' | 'enabled' | 'disabled'; critic_thinking_mode?: 'auto' | 'enabled' | 'disabled'; judge_thinking_mode?: 'auto' | 'enabled' | 'disabled'; default_reranker?: LlmSelection | null; max_concurrent: number; evaluation_max_concurrent: number; evaluation_max_requests: number; evaluation_max_output_tokens: number; default_embedding_model: LlmSelection | null; default_judge_llm: LlmSelection | null; scoring_engine: 'deepeval' | 'ragas'; judge_prompt: string; default_judge_prompt: string; default_llm: LlmSelection | null; default_critic_llm: LlmSelection | null; prompt: string; default_prompt: string; critic_prompt: string; default_critic_prompt: string };
 
 export type GenerationDetails = {
   availability: 'recorded' | 'unavailable'; edited: boolean;
   sample: {input: string; expected_output?: string | null; context?: string[] | null};
   trace: null | {id: string; created_at: string; backend: string; method: string; prompt: string; critic_prompt?: string;
-    options: Record<string, unknown>; models: Record<string, {model?: string} | null>;
-    sources: Array<{content?: string; golden?: Golden; metadata?: Record<string, unknown>}>};
+    options: Record<string, unknown>; models: Record<string, {model?: string; selection?: {id?: string; model?: string; credential_id?: string}} | null>;
+    sources: Array<{content?: string; golden?: Golden; metadata?: Record<string, unknown>}>;
+    llm_request?: {model?: string; provider_id?: string; credential_id?: string; system_prompt?: string | null; messages?: Array<{role?: string; content?: string}>; parameters?: Record<string, unknown>; parameter_details?: Record<string, {value?: unknown; source?: string}>; request_scope?: 'sample' | 'batch'; request_match?: 'sample_input' | 'sample_context' | 'batch_snapshot'; request_match_score?: number; request_context_matches?: number; request_context_total?: number; request_sequence?: number | string; request_role?: string};
+    llm_requests?: Array<{sequence?: number | string; role?: string; model?: string; messages?: Array<{role?: string; content?: string}>; parameters?: Record<string, unknown>}>;
+  };
 };
 export type GenerationRequestSummary = {id: string; sequence: number | string; created_at: string; role: string; model: string};
 export type GenerationRequest = GenerationRequestSummary & {request: {model: string; messages: Array<{role: string; content: string}>; [key: string]: unknown}};

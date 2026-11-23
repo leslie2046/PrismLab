@@ -21,7 +21,8 @@ import {datasetPurposeLabels, type DatasetPurpose} from '../evaluationTypes';
 import {validRagasDistribution} from '../ragasDistribution';
 import { RagasDistributionSettings } from './RagasDistributionSettings';
 import { EvaluationStatus } from './EvaluationStatus';
-import { metricNames } from './EvaluationDialog';
+import { EvaluationDialog, metricNames } from './EvaluationDialog';
+import { useConfirm } from './ConfirmDialog';
 import '../datasets.css';
 
 type Mode = 'import' | 'documents' | 'dify' | 'manual';
@@ -29,10 +30,21 @@ const createModeLabels = { import: '数据集导入', documents: '从文档生�
 const statusLabels = { ready: '可用', generating: '构建中', failed: '构建失败', cancelled: '已取消' };
 const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 const renderValue = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
+const hasMeaningfulAnswer = (value: unknown) => {
+  const rendered = renderValue(value).trim();
+  const normalized = rendered.replace(/^["']|["']$/g, '').trim().toLowerCase();
+  return normalized !== '' && normalized !== 'null' && normalized !== 'undefined';
+};
+function sampleQuality(item: DatasetItem, report: Dataset['quality_report']) {
+  if (!report) return { omissions: [] as Array<{ id: string; preview?: string }> };
+  const omissions: Array<{ id: string; preview?: string }> = report.annotation_warnings.filter(warning => warning.sample_id === item.id).flatMap(warning => warning.candidates?.length ? warning.candidates.map(candidate => ({ id: candidate.chunk_id, preview: candidate.content_preview })) : warning.candidate_chunk_ids.map(id => ({ id, preview: undefined })));
+  return { omissions: [...new Map(omissions.map(value => [value.id, value])).values()] };
+}
 const emptyPage = <T,>(): PageResult<T> => ({ items: [], total: 0, page: 1, page_size: 10 });
 
-export function Datasets({ catalog, language, initialDifyConfigId, onCreateClosed, onDatasetChange }: { catalog: Catalog | null; language: Language; initialDifyConfigId?: string | null; onCreateClosed?: () => void; onDatasetChange?: (name: string | null) => void }) {
+export function Datasets({ catalog, language, initialDifyConfigId, onCreateClosed, onDatasetChange, onPlayground }: { catalog: Catalog | null; language: Language; initialDifyConfigId?: string | null; onCreateClosed?: () => void; onDatasetChange?: (name: string | null) => void; onPlayground?: (draft: {systemPrompt: string; query: string; providerId?: string; model?: string; credentialId?: string; parameters: Record<string, string | number>}) => void }) {
   const t = (value: string) => tr(language, value);
+  const confirm = useConfirm();
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [list, setList] = useState(emptyPage<Dataset>);
   const [items, setItems] = useState(emptyPage<DatasetItem>);
@@ -40,6 +52,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
   const [size, setSize] = useState(10);
   const [q, setQ] = useState('');
   const [query, setQuery] = useState('');
+  const [qualityFilter, setQualityFilter] = useState<'all' | 'omission'>('all');
   const [purpose, setPurpose] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -50,6 +63,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
   const [generationView, setGenerationView] = useState<{item: DatasetItem; tab: GenerationTab} | null>(null);
   const [editing, setEditing] = useState<DatasetItem | 'new' | null>(null);
   const [detailTab, setDetailTab] = useState<'samples' | 'evaluations' | 'settings'>('samples');
+  const [settingsSection, setSettingsSection] = useState<'basic' | 'generation' | 'sources' | 'evaluation'>('basic');
   const [saved, setSaved] = useState('');
   const [syncingSource, setSyncingSource] = useState<string | null>(null);
   const [sourceMessage, setSourceMessage] = useState('');
@@ -67,8 +81,11 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
       .map(source => source.config_id || source.dataset_id || source.name),
   ]).size;
   const selection = useBulkSelection(JSON.stringify([id, q]));
+  const datasetSelection = useBulkSelection(JSON.stringify(['dataset-list', purpose, query]));
   const selectionDisabled = busy || generating || loading || !!error || q !== query;
+  const datasetSelectionDisabled = busy || loading || !!error || datasetSelection.busy;
   const pageIds = items.items.map(item => item.id);
+  const datasetPageIds = list.items.map(item => item.id);
   const pageChecked = pageIds.length > 0 && pageIds.every(id => selection.ids.has(id));
   const pageMixed = !pageChecked && pageIds.some(id => selection.ids.has(id));
   useEffect(() => { const timer = setTimeout(() => { setQuery(q); setPage(1); }, 250); return () => clearTimeout(timer); }, [q]);
@@ -76,14 +93,14 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     const controller = new AbortController();
     let active = true;
     setLoading(true); setError('');
-    const work = id ? Promise.all([datasetApi.get(id, controller.signal), datasetApi.items(id, page, size, query, controller.signal), datasetApi.sources(id, controller.signal)]) : datasetApi.list(page, size, query, controller.signal, purpose);
+    const work = id ? Promise.all([datasetApi.get(id, controller.signal), datasetApi.items(id, page, size, query, controller.signal, qualityFilter), datasetApi.sources(id, controller.signal)]) : datasetApi.list(page, size, query, controller.signal, purpose);
     work.then(value => {
       if (!active) return;
       if (Array.isArray(value)) { setDataset(value[0]); setItems(value[1]); setSources(value[2]); if (value[1].page !== page) setPage(value[1].page); }
       else { setList(value); if (value.page !== page) setPage(value.page); }
     }).catch(reason => { if (active && reason.name !== 'AbortError') setError(message(reason)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [id, page, size, query, reload, purpose]);
+  }, [id, page, size, query, qualityFilter, reload, purpose]);
   useEffect(() => {
     if (!id || !generating) return;
     const controller = new AbortController();
@@ -91,10 +108,17 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const value = await datasetApi.get(id!, controller.signal);
+        const [value, nextItems, nextSources] = await Promise.all([
+          datasetApi.get(id!, controller.signal),
+          datasetApi.items(id!, page, size, query, controller.signal, qualityFilter),
+          datasetApi.sources(id!, controller.signal),
+        ]);
         if (!active) return;
         // A cancellation response may arrive before an older status response.
         setDataset(current => current && current.id === id && current.status === 'generating' ? value : current);
+        setItems(nextItems);
+        setSources(nextSources);
+        if (nextItems.page !== page) setPage(nextItems.page);
         setProgressError('');
         if (value.status !== 'generating') {
           setReload(value => value + 1);
@@ -109,7 +133,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     setProgressError('');
     timer = setTimeout(() => void poll(), 1000);
     return () => { active = false; controller.abort(); clearTimeout(timer); };
-  }, [id, generating]);
+  }, [id, generating, page, size, query, qualityFilter]);
   const listGenerating = !id && list.items.some(value => value.status === 'generating');
   useEffect(() => {
     if (!listGenerating) return;
@@ -129,7 +153,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     return () => { active = false; controller.abort(); clearTimeout(timer); };
   }, [listGenerating, page, size, query, purpose]);
   useEffect(() => { onDatasetChange?.(dataset?.name || null); }, [dataset?.name, onDatasetChange]);
-  function open(value: Dataset | null) { setSourceMessage(''); setSourceError(''); setDetailTab('samples'); setSaved(''); setSources(null); setDataset(value); setItems(emptyPage()); setPage(1); setQ(''); setQuery(''); setError(''); }
+  function open(value: Dataset | null) { setSourceMessage(''); setSourceError(''); setDetailTab('samples'); setSettingsSection('basic'); setSaved(''); setSources(null); setDataset(value); setItems(emptyPage()); setPage(1); setQ(''); setQuery(''); setQualityFilter('all'); setError(''); datasetSelection.clear(); }
   async function act(action: () => Promise<unknown>) {
     setBusy(true); setError('');
     try { await action(); setReload(value => value + 1); }
@@ -147,30 +171,43 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     } catch (reason) { setSourceError(message(reason)); }
     finally { setBusy(false); setSyncingSource(null); }
   }
-  function bulkItems(action: 'enable' | 'archive' | 'delete') {
+  async function bulkItems(action: 'enable' | 'archive' | 'delete') {
     if (!dataset) return;
-    if (action === 'delete' && !window.confirm(`${t('批量删除')} ${selection.ids.size} ${t('条记录')}？ ${t('此操作无法撤销。')}`)) return;
+    if (action === 'delete' && !await confirm({ title: t('确认删除吗？'), message: `${t('批量删除')} ${selection.ids.size} ${t('条记录')}。`, detail: t('此操作无法撤销。'), confirmLabel: t('确认删除'), danger: true })) return;
     void selection.execute(ids => datasetApi.bulkItems(dataset.id, action, ids), () => setReload(value => value + 1));
   }
-  function regenerateAnswers(ids: string[]) {
+  async function bulkDatasets() {
+    if (!datasetSelection.ids.size) return;
+    if (!await confirm({ title: t('确认删除吗？'), message: `${t('批量删除')} ${datasetSelection.ids.size} ${t('个数据集')}。`, detail: t('数据集及其全部数据项将被删除，此操作无法撤销。'), confirmLabel: t('确认删除'), danger: true })) return;
+    void datasetSelection.execute(ids => datasetApi.bulk('delete', ids), () => setReload(value => value + 1));
+  }
+  async function regenerateAnswers(ids: string[]) {
     if (!dataset || !ids.length || generating || busy) return;
-    if (!window.confirm(`${t('确认重新生成')} ${ids.length} ${t('条样本的参考答案？')} ${t('问题、上下文和来源不会改变。')}`)) return;
+    if (!await confirm({ title: t('确认重新生成吗？'), message: `${t('确认重新生成')} ${ids.length} ${t('条样本的参考答案')}。`, detail: t('问题、上下文和来源不会改变。') })) return;
     void act(async () => { const value = await datasetApi.regenerateAnswers(dataset.id, ids); setDataset(value); selection.clear(); });
   }
+  async function deleteItem(itemId: string) {
+    if (!await confirm({ title: t('确认删除吗？'), message: t('确认删除这条数据项？'), detail: t('此操作无法撤销。'), confirmLabel: t('确认删除'), danger: true })) return;
+    void act(() => datasetApi.deleteItem(dataset!.id, itemId));
+  }
+  async function deleteDataset(value: Dataset) {
+    if (!await confirm({ title: t('确认删除吗？'), message: `${t('确认删除数据集及其所有数据项？')} ${value.name}`, detail: t('此操作无法撤销。'), confirmLabel: t('确认删除'), danger: true })) return;
+    void act(() => datasetApi.delete(value.id));
+  }
   const data = id ? items : list;
-  return <section className="panel datasets-panel">
-    <PageHeader className={`dataset-heading ${dataset ? 'dataset-detail-heading' : ''}`} icon={Database} title={dataset ? dataset.name : t('评测数据集')} count={!dataset ? list.total : undefined} description={!dataset ? t('管理问题、参考答案与检索标注，可用于 RAG 或检索评测。') : undefined} meta={dataset && <div className="dataset-heading-meta"><DatasetStatus dataset={dataset} language={language} /><span>{t(datasetPurposeLabels[dataset.evaluation_purpose || 'both'])}</span><span>{knowledgeSourceCount} {t('个 Dify 知识库')}</span>{dataset.source_chunk_count !== undefined && <span>{dataset.source_chunk_count} {t('个知识片段')}</span>}</div>} breadcrumb={dataset && <button type="button" className="dataset-back ghost" onClick={() => open(null)}><ArrowLeft />{t('所有评测数据集')}</button>} actions={<div className="dataset-actions">{dataset ? <>
-      <button type="button" className="ghost" disabled={busy || generating || selection.busy} onClick={() => setMaintenance('build')}><Sparkles aria-hidden="true" />{t('重新构建')}</button>
-      {detailTab === 'samples' && <button type="button" className="ghost" disabled={busy || generating || loading || !!error || q !== query || selection.busy || !selection.ids.size} onClick={() => regenerateAnswers([...selection.ids])}><Sparkles aria-hidden="true" />{t('重新生成答案')}</button>}
-      {detailTab === 'samples' && <>
+  const actions = <div className="dataset-actions">{dataset ? <>
+    {detailTab === 'samples' && <>
       <button type="button" className="ghost" disabled={busy || generating || selection.busy} onClick={() => setMaintenance('dify')}><FileUp aria-hidden="true" />{t('导入知识库来源')}</button>
       <button type="button" className="ghost" disabled={busy || loading || !!error || selection.busy || q !== query} onClick={() => setExportIds([...selection.ids])}><Download aria-hidden="true" />{t('批量导出')}</button>
-
       {!retrievalOnly && <button type="button" className="ghost" disabled={busy || generating || selection.busy} onClick={() => setAppend(true)}><FileUp aria-hidden="true" />{t('追加导入')}</button>}
+      <button type="button" className="ghost" disabled={busy || generating || selection.busy} onClick={() => setMaintenance('build')}><RefreshCw aria-hidden="true" />{t('重新构建')}</button>
       {!retrievalOnly && <button type="button" className="primary" disabled={busy || generating || selection.busy} onClick={() => setEditing('new')}><Plus aria-hidden="true" />{t('添加数据项')}</button>}
     </>}
-    </> : <button type="button" className="primary compact" onClick={() => setCreate(true)}><Plus aria-hidden="true" />{t('新建评测数据集')}</button>}</div>} />
-    {dataset && (generating || dataset.status === 'cancelled') && <BuildProgress dataset={dataset} language={language} busy={busy} error={progressError} onCancel={() => void act(async () => setDataset(await datasetApi.cancel(dataset.id)))} onRetry={() => void act(async () => setDataset(await datasetApi.retry(dataset.id)))} />}
+  </> : <button type="button" className="primary compact" onClick={() => setCreate(true)}><Plus aria-hidden="true" />{t('新建评测数据集')}</button>}</div>;
+  return <div className={`dataset-workspace ${dataset ? `is-detail${detailTab === 'samples' ? ' has-metadata' : ''}${detailTab === 'evaluations' ? ' has-evaluations' : ''}` : ''}`}>
+    {dataset && <DatasetContextSidebar dataset={dataset} detailTab={detailTab} language={language} onBack={() => open(null)} onTabChange={setDetailTab} />}
+  <section className="panel datasets-panel">
+    {dataset ? detailTab === 'samples' && <div className="dataset-detail-actions"><h2 className="dataset-detail-title">{t('样本管理')}</h2>{(generating || dataset.status === 'cancelled') && <BuildProgress dataset={dataset} language={language} busy={busy} error={progressError} onCancel={() => void act(async () => setDataset(await datasetApi.cancel(dataset.id)))} onRetry={() => void act(async () => setDataset(await datasetApi.retry(dataset.id)))} />}{actions}</div> : <PageHeader className="dataset-heading" icon={Database} title={t('评测数据集')} count={list.total} description={t('管理问题、参考答案与检索标注，可用于 RAG 或检索评测。')} actions={actions} />}
     {dataset && <div className="dataset-local-tabs" role="tablist" aria-label={t('数据集导航')} onKeyDown={event => {if(['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){event.preventDefault();const tabs = ['samples','evaluations','settings'] as const;const index = tabs.indexOf(detailTab);const next = tabs[event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3];setDetailTab(next);document.getElementById(`dataset-${next}-tab`)?.focus();}}}>
       <button role="tab" tabIndex={detailTab === 'samples' ? 0 : -1} id="dataset-samples-tab" aria-controls="dataset-samples" aria-selected={detailTab === 'samples'} onClick={() => setDetailTab('samples')}><Database aria-hidden="true" />{t('样本')}<span>{dataset.item_count}</span></button>
       <button role="tab" tabIndex={detailTab === 'evaluations' ? 0 : -1} id="dataset-evaluations-tab" aria-controls="dataset-evaluations" aria-selected={detailTab === 'evaluations'} onClick={() => setDetailTab('evaluations')}><Activity aria-hidden="true" />{t('评测记录')}</button>
@@ -179,41 +216,63 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     {dataset && detailTab === 'evaluations' && <div id="dataset-evaluations" role="tabpanel" aria-labelledby="dataset-evaluations-tab"><Evaluations key={dataset.id} catalog={catalog} language={language} dataset={dataset} /></div>}
     {dataset && <div hidden={detailTab !== 'settings'} id="dataset-settings" role="tabpanel" aria-labelledby="dataset-settings-tab" className="dataset-settings-page">
       {saved && <p className="dataset-save-success" role="status"><CheckCircle2 aria-hidden="true" />{saved}</p>}
-      <section className="dataset-settings-section"><header><h3>{t('基本信息')}</h3><p>{t('名称与评测用途')}</p></header><DatasetMetadata key={dataset.id} embedded dataset={dataset} language={language} onClose={() => {}} onSaved={value => {setDataset(value);setSaved(t('基本信息已保存'));}} /></section>
-      <section className="dataset-settings-section"><header><h3>{t('生成配置')}</h3><p>{t('配置模型和生成规则，保存后在下次构建时生效。')}</p></header><DatasetMaintenance key={`${dataset.id}-${dataset.evaluation_purpose}`} embedded mode="config" dataset={dataset} sources={sources} catalog={catalog} language={language} onClose={() => {}} onSaved={value => {setDataset(value);setSaved(t('生成配置已保存'));}} /></section>
-      <section className="dataset-settings-section"><header><h3>{t('来源资料')}</h3><p>{t(retrievalOnly ? '同步知识库最新片段，供后续生成样本使用。' : '管理用于生成样本的文档和知识库。')}</p></header><div className="dataset-source-content"><div className="dataset-actions">{!retrievalOnly && <button className="ghost" disabled={busy || generating} onClick={() => setMaintenance('documents')}><FileUp />{t('导入文档')}</button>}<button className="ghost" disabled={busy || generating} onClick={() => setMaintenance('dify')}><RefreshCw />{t('导入知识库来源')}</button></div>{sourceMessage && <p className="dataset-save-success" role="status"><CheckCircle2 aria-hidden="true" />{sourceMessage}</p>}{sourceError && <p className="error-text" role="alert">{sourceError}</p>}{sources?.items.length ? <ul className="dataset-source-list">{sources.items.map((source,index) => <li key={source.config_id || index}><div className="dataset-source-identity"><span>{source.name}</span>{source.kind === 'dify' && <button type="button" className="ghost compact dataset-source-sync" aria-label={`${t('同步知识库')} ${source.name}`} disabled={busy || generating || !source.config_id} onClick={() => source.config_id && void syncKnowledge(source.config_id, source.name)}><RefreshCw aria-hidden="true" className={syncingSource === source.config_id ? 'spin' : undefined} />{t(syncingSource === source.config_id ? '同步中…' : '同步')}</button>}</div><small>{source.kind === 'dify' ? 'Dify' : t('文档')} · {source.chunk_count} {t('个片段')}</small></li>)}</ul> : <p className="field-help">{t('尚未同步 Dify 知识库。')}</p>}</div></section>
-
+      <div className="dataset-settings-tabs" role="tablist" aria-label={t('设置导航')}>
+        {([['basic', '基本信息'], ['generation', '生成配置'], ['sources', '来源资料'], ['evaluation', '评测配置']] as const).map(([value, label]) => <button type="button" role="tab" key={value} id={`dataset-settings-${value}-tab`} aria-controls={`dataset-settings-${value}`} aria-selected={settingsSection === value} tabIndex={settingsSection === value ? 0 : -1} onClick={() => setSettingsSection(value)}>{t(label)}</button>)}
+      </div>
+      <div hidden={settingsSection !== 'basic'} id="dataset-settings-basic" role="tabpanel" aria-labelledby="dataset-settings-basic-tab" className="dataset-settings-pane">
+        <DatasetMetadata key={dataset.id} embedded dataset={dataset} language={language} onClose={() => {}} onSaved={value => {setDataset(value);setSaved(t('基本信息已保存'));}} />
+      </div>
+      <div hidden={settingsSection !== 'generation'} id="dataset-settings-generation" role="tabpanel" aria-labelledby="dataset-settings-generation-tab" className="dataset-settings-pane">
+        <DatasetMaintenance key={`${dataset.id}-${dataset.evaluation_purpose}`} embedded mode="config" dataset={dataset} sources={sources} catalog={catalog} language={language} onClose={() => {}} onSaved={value => {setDataset(value);setSaved(t('生成配置已保存'));}} />
+      </div>
+      <div hidden={settingsSection !== 'sources'} id="dataset-settings-sources" role="tabpanel" aria-labelledby="dataset-settings-sources-tab" className="dataset-settings-pane">
+        <div className="dataset-source-content"><p className="field-help">{t(retrievalOnly ? '同步知识库最新片段，供后续生成样本使用。' : '管理用于生成样本的文档和知识库。')}</p><div className="dataset-actions">{!retrievalOnly && <button className="ghost" disabled={busy || generating} onClick={() => setMaintenance('documents')}><FileUp />{t('导入文档')}</button>}<button className="ghost" disabled={busy || generating} onClick={() => setMaintenance('dify')}><RefreshCw />{t('导入知识库来源')}</button></div>{sourceMessage && <p className="dataset-save-success" role="status"><CheckCircle2 aria-hidden="true" />{sourceMessage}</p>}{sourceError && <p className="error-text" role="alert">{sourceError}</p>}{sources?.items.length ? <ul className="dataset-source-list">{sources.items.map((source,index) => <li key={source.config_id || index}><div className="dataset-source-identity"><span>{source.name}</span>{source.kind === 'dify' && <button type="button" className="ghost compact dataset-source-sync" aria-label={`${t('同步知识库')} ${source.name}`} disabled={busy || generating || !source.config_id} onClick={() => source.config_id && void syncKnowledge(source.config_id, source.name)}><RefreshCw aria-hidden="true" className={syncingSource === source.config_id ? 'spin' : undefined} />{t(syncingSource === source.config_id ? '同步中…' : '同步')}</button>}</div><small>{source.kind === 'dify' ? 'Dify' : t('文档')} · {source.chunk_count} {t('个片段')}</small></li>)}</ul> : <p className="field-help">{t('尚未同步 Dify 知识库。')}</p>}</div>
+      </div>
+      <div hidden={settingsSection !== 'evaluation'} id="dataset-settings-evaluation" role="tabpanel" aria-labelledby="dataset-settings-evaluation-tab" className="dataset-settings-pane">
+        <EvaluationDialog mode="config" fixedDataset={dataset} catalog={catalog} language={language} onClose={() => {}} onCreated={() => {}} onConfigSaved={value => { setDataset(value); setSaved(t('评测配置已保存')); }} />
+      </div>
     </div>}
     {<div hidden={!!dataset && detailTab !== 'samples'} id="dataset-samples" role={dataset ? 'tabpanel' : undefined} aria-labelledby={dataset ? 'dataset-samples-tab' : undefined}>
-    {dataset && <div className="dataset-sample-tools"><span>{t('样本管理')}</span></div>}
     {dataset?.error && <div className="dataset-feedback warning" role="alert"><span>{dataset.error}</span>{dataset.status === 'failed' && <button type="button" className="ghost" disabled={busy} onClick={() => void act(async () => setDataset(await datasetApi.retry(dataset.id)))}><RefreshCw aria-hidden="true" />{t('继续构建')}</button>}</div>}
 
-    <div className="dataset-toolbar"><label className="dataset-search"><Search aria-hidden="true" /><input aria-label={t(id ? '搜索数据项' : '搜索数据集')} placeholder={t(id ? '搜索数据项' : '搜索数据集')} value={q} maxLength={200} onChange={event => setQ(event.target.value)} /></label>{!dataset && <label className="field"><select aria-label={t('筛选数据集用途')} value={purpose} onChange={e => {setPurpose(e.target.value);setPage(1);}}><option value="">{t('全部用途')}</option>{Object.entries(datasetPurposeLabels).map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>}<button type="button" className="ghost" disabled={loading} onClick={() => setReload(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button></div>
+    <div className="dataset-toolbar">{dataset && <label className="filter-control dataset-quality-filter"><select aria-label={t('筛选质量问题')} value={qualityFilter} onChange={event => {setQualityFilter(event.target.value as typeof qualityFilter);setPage(1);selection.clear();}}><option value="all">{t('全部样本')}</option><option value="omission">{t('疑似遗漏')}</option></select></label>}{!dataset && <label className="filter-control"><select aria-label={t('筛选数据集用途')} value={purpose} onChange={e => {setPurpose(e.target.value);setPage(1);}}><option value="">{t('全部用途')}</option>{Object.entries(datasetPurposeLabels).map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>}<label className="dataset-search"><Search aria-hidden="true" /><input aria-label={t(id ? '搜索数据项' : '搜索数据集')} placeholder={t(id ? '搜索数据项' : '搜索数据集')} value={q} maxLength={200} onChange={event => setQ(event.target.value)} /></label><button type="button" className="ghost" disabled={loading} onClick={() => setReload(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button></div>
+    {!dataset && <BulkSelectionBar selection={datasetSelection} language={language}>
+      <button type="button" className="ghost" disabled={datasetSelectionDisabled || !datasetPageIds.length} onClick={() => datasetSelection.toggle(datasetPageIds, true)}>{t('全选当前页')}</button>
+      <button type="button" className="ghost" disabled={datasetSelection.busy} onClick={datasetSelection.clear}>{t('全不选')}</button>
+      <button type="button" className="ghost danger" disabled={datasetSelectionDisabled} onClick={() => void bulkDatasets()}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
+    </BulkSelectionBar>}
     {dataset && <BulkSelectionBar selection={selection} language={language}>
       <button className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void selection.selectAll(() => datasetApi.itemSelection(dataset.id, query))}>{t('全选全部匹配记录')}</button>
       <button className="ghost" disabled={selection.busy} onClick={selection.clear}>{t('全不选')}</button>
       <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => setExportIds([...selection.ids])}><Download aria-hidden="true" />{t('批量导出')}</button>
-      <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => bulkItems('enable')}><CheckCircle2 aria-hidden="true" />{t('批量启用')}</button>
-      <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => bulkItems('archive')}><Archive aria-hidden="true" />{t('批量归档')}</button>
-      <button type="button" className="ghost danger" disabled={selectionDisabled || selection.busy} onClick={() => bulkItems('delete')}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
+      <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void bulkItems('enable')}><CheckCircle2 aria-hidden="true" />{t('批量启用')}</button>
+      <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void bulkItems('archive')}><Archive aria-hidden="true" />{t('批量归档')}</button>
+      <button type="button" className="ghost danger" disabled={selectionDisabled || selection.busy} onClick={() => void bulkItems('delete')}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
     </BulkSelectionBar>}
     {error && <div className="dataset-feedback error" role="alert">{error}<button type="button" className="ghost" onClick={() => setReload(value => value + 1)}>{t('重试')}</button></div>}
     {loading && <p className="pagination-feedback" role="status">{t('加载中…')}</p>}
     {dataset ? <div className="dataset-sample-list" aria-busy={loading}>
-      <div className="dataset-sample-list-head"><SelectionCheckbox label={t('全选当前页')} checked={pageChecked} mixed={pageMixed} disabled={selectionDisabled || selection.busy || !pageIds.length} onChange={checked => selection.toggle(pageIds, checked)} /><span>{t('输入 / 问题')} · {t('参考答案')}</span><span>{t('状态')}</span></div>
-      {items.items.map((item,index) => <article key={item.id} className={`dataset-sample-row ${selection.ids.has(item.id) ? 'bulk-selected' : ''}`}>
-        <SelectionCheckbox label={`${t('选择记录')} ${item.id}`} checked={selection.ids.has(item.id)} disabled={selectionDisabled || selection.busy} onChange={checked => selection.toggle([item.id], checked)} />
-        <div className="dataset-sample-main"><button className="dataset-sample-content" disabled={selection.busy} onClick={() => setEditing(item)}><small>#{(page-1)*size+index+1} · {item.context?.length || 0} {t('个片段')}</small><div><b>Q</b><strong>{renderValue(item.input)}</strong></div><div><b>A</b><span>{renderValue(item.expected_output) || t('未设置参考答案')}</span></div></button><div className="dataset-sample-trace-links"><button type="button" onClick={() => setGenerationView({item, tab: 'prompts'})}>{t('生成提示词')}</button><button type="button" onClick={() => setGenerationView({item, tab: 'context'})}>{t('上下文与来源')} ({item.context?.length || 0})</button></div></div>
-        <div className="dataset-sample-operations"><CompactSwitch title={t(item.status === 'active' ? '归档数据项' : '启用数据项')} checked={item.status === 'active'} disabled={selectionDisabled || selection.busy} label={t(item.status === 'active' ? '归档数据项' : '启用数据项')} onChange={() => void act(async () => {const result = await datasetApi.bulkItems(dataset.id,item.status === 'active' ? 'archive' : 'enable',[item.id]);if(result.failed.length) throw new Error(result.failed[0].message);})} /><span>{t(item.status === 'active' ? '启用' : '归档')}</span><button className="icon-button" aria-label={t('重新生成答案')} title={t('重新生成答案')} disabled={selectionDisabled || selection.busy || !item.context?.length} onClick={() => regenerateAnswers([item.id])}><Sparkles aria-hidden="true" /></button>{!retrievalOnly && <button className="icon-button" aria-label={t('查看或编辑数据项')} disabled={selection.busy} onClick={() => setEditing(item)}><Pencil /></button>}<button className="icon-button" aria-label={t('删除数据项')} disabled={busy || generating || selection.busy} onClick={() => {if(window.confirm(t('确认删除这条数据项？'))) void act(() => datasetApi.deleteItem(dataset.id,item.id));}}><Trash2 /></button></div>
-      </article>)}
+      <div className="dataset-sample-list-head"><SelectionCheckbox label={t('全选当前页')} checked={pageChecked} mixed={pageMixed} disabled={selectionDisabled || selection.busy || !pageIds.length} onChange={checked => selection.toggle(pageIds, checked)} /><span className="dataset-sample-count">{dataset.item_count} {t('条样本')}</span><span>{t('质量检查')}</span><span>{t('状态')}</span></div>
+      {items.items.map((item,index) => {
+        const answer = renderValue(item.expected_output);
+        const hasAnswer = hasMeaningfulAnswer(item.expected_output);
+        return <article key={item.id} className={`dataset-sample-row ${selection.ids.has(item.id) ? 'bulk-selected' : ''}`}>
+          <SelectionCheckbox label={`${t('选择记录')} ${item.id}`} checked={selection.ids.has(item.id)} disabled={selectionDisabled || selection.busy} onChange={checked => selection.toggle([item.id], checked)} />
+          <div className="dataset-sample-main"><button className="dataset-sample-content" disabled={selection.busy} onClick={() => setEditing(item)}><small>#{(page-1)*size+index+1} · {item.context?.length || 0} {t('个片段')}</small><div><b>Q</b><strong>{renderValue(item.input)}</strong></div>{hasAnswer && <div><b>A</b><span>{answer}</span></div>}</button><div className="dataset-sample-trace-links"><button type="button" onClick={() => setGenerationView({item, tab: 'prompts'})}>{t('生成详情')}</button></div></div>
+          {(() => { const quality = sampleQuality(item, dataset.quality_report); return <div className="dataset-sample-quality">{quality.omissions.length > 0 ? <details className="quality-omission-details"><summary className="quality-omission">{t('疑似遗漏')} · {quality.omissions.length} {t('个分段')}</summary><div className="quality-omission-list">{quality.omissions.map(value => <p key={value.id}><code>{value.id}</code>{value.preview && <span>{value.preview}</span>}</p>)}</div></details> : <small>—</small>}</div>; })()}
+          <div className="dataset-sample-operations"><CompactSwitch title={t(item.status === 'active' ? '归档数据项' : '启用数据项')} checked={item.status === 'active'} disabled={selectionDisabled || selection.busy} label={t(item.status === 'active' ? '归档数据项' : '启用数据项')} onChange={() => void act(async () => {const result = await datasetApi.bulkItems(dataset.id,item.status === 'active' ? 'archive' : 'enable',[item.id]);if(result.failed.length) throw new Error(result.failed[0].message);})} /><span>{t(item.status === 'active' ? '启用' : '归档')}</span><button className="icon-button" aria-label={t('重新生成答案')} title={t('重新生成答案')} disabled={selectionDisabled || selection.busy || !item.context?.length} onClick={() => void regenerateAnswers([item.id])}><Sparkles aria-hidden="true" /></button>{!retrievalOnly && <button className="icon-button" aria-label={t('查看或编辑数据项')} disabled={selection.busy} onClick={() => setEditing(item)}><Pencil /></button>}<button className="icon-button" aria-label={t('删除数据项')} disabled={busy || generating || selection.busy} onClick={() => void deleteItem(item.id)}><Trash2 /></button></div>
+        </article>;
+      })}
     </div> : <div className="dataset-table-wrap" tabIndex={0} role="region" aria-label={t('评测数据集列表')} aria-busy={loading}>
       <table className="dataset-table dataset-index-table">
         <thead><tr>
+          <th className="selection-cell"><SelectionCheckbox label={t('全选当前页')} checked={datasetPageIds.length > 0 && datasetPageIds.every(itemId => datasetSelection.ids.has(itemId))} mixed={datasetPageIds.some(itemId => datasetSelection.ids.has(itemId)) && !datasetPageIds.every(itemId => datasetSelection.ids.has(itemId))} disabled={datasetSelectionDisabled || !datasetPageIds.length} onChange={checked => datasetSelection.toggle(datasetPageIds, checked)} /></th>
           {['名称', '数据集用途', '数据来源', '样本数', '状态'].map(label => <th key={label} scope="col">{t(label)}</th>)}
           <th scope="col"><span className="label-with-tip">{t('最新评测 · 指标均分')}<InfoTip label={t('最新评测摘要说明')} text={t('显示最近创建的一次评测，各指标分别取有效评分样本的平均分。分数范围为 0–1，越高越好；缺少数据、执行失败和等待中的样本不记为零分。')} /></span></th>
           <th scope="col">{t('更新时间')}</th><th scope="col">{t('操作')}</th>
         </tr></thead>
-        <tbody>{list.items.map(value => <tr key={value.id}>
+        <tbody>{list.items.map(value => <tr key={value.id} className={datasetSelection.ids.has(value.id) ? 'bulk-selected' : undefined}>
+          <td className="selection-cell"><SelectionCheckbox label={`${t('选择记录')} ${value.name}`} checked={datasetSelection.ids.has(value.id)} disabled={datasetSelectionDisabled} onChange={checked => datasetSelection.toggle([value.id], checked)} /></td>
           <th scope="row"><button type="button" className="dataset-cell-button dataset-name-cell" onClick={() => open(value)}><strong>{value.name}</strong>{value.description && <small>{value.description}</small>}</button></th>
           <td>{t(datasetPurposeLabels[value.evaluation_purpose || 'both'])}</td>
           <td><div className="dataset-source-cell">{value.data_sources?.length ? value.data_sources.map((source,index) => <span key={index} title={source.name}>{source.kind === 'dify' ? source.name : source.kind === 'documents' || source.kind === 'import' ? source.name : t(({manual:'手动创建',goldens:'种子扩写',scratch:'按任务生成'} as Record<string,string>)[source.kind] || source.name)}</span>) : <span className="muted">{t('暂无来源')}</span>}</div></td>
@@ -221,7 +280,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
           <td><DatasetStatus dataset={value} language={language} /></td>
           <td><LatestDatasetEvaluation dataset={value} language={language} /></td>
           <td><time dateTime={value.updated_at}>{new Date(value.updated_at).toLocaleDateString(language)}</time></td>
-          <td><button type="button" className="icon-button" aria-label={`${t('删除数据集')} ${value.name}`} disabled={busy || value.status === 'generating'} onClick={() => {if(window.confirm(`${t('确认删除数据集及其所有数据项？')} ${value.name}`)) void act(() => datasetApi.delete(value.id));}}><Trash2 aria-hidden="true" /></button></td>
+          <td><button type="button" className="icon-button" aria-label={`${t('删除数据集')} ${value.name}`} disabled={busy || value.status === 'generating'} onClick={() => void deleteDataset(value)}><Trash2 aria-hidden="true" /></button></td>
         </tr>)}</tbody>
       </table>
     </div>}
@@ -231,13 +290,90 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     <Pagination page={data.page} pageSize={size} total={data.total} language={language} label={t(id ? '数据项' : '数据集')} onPageChange={setPage} onPageSizeChange={value => { setSize(value); setPage(1); }} disabled={loading || selection.busy} />
     </div>}
     {create && <CreateDataset catalog={catalog} language={language} initialDifyConfigId={initialDifyConfigId} onClose={() => { setCreate(false); onCreateClosed?.(); }} onCreated={value => { setCreate(false); onCreateClosed?.(); open(value); setReload(n => n + 1); }} />}
-    {generationView && dataset && <GenerationDetails datasetId={dataset.id} item={generationView.item} initialTab={generationView.tab} language={language} onClose={() => setGenerationView(null)} />}
+    {generationView && dataset && <GenerationDetails datasetId={dataset.id} item={generationView.item} initialTab={generationView.tab} language={language} onClose={() => setGenerationView(null)} onPlayground={onPlayground} />}
     {editing && dataset && <ItemEditor item={editing === 'new' ? null : editing} dataset={dataset} language={language} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setReload(value => value + 1); }} />}
 
     {maintenance && dataset && <DatasetMaintenance mode={maintenance} dataset={dataset} sources={sources} catalog={catalog} language={language} onClose={() => setMaintenance(null)} onSaved={value => { setDataset(value); setMaintenance(null); setReload(n => n + 1); }} />}
     {append && dataset && <ImportItems dataset={dataset} language={language} onClose={() => setAppend(false)} onSaved={() => { setAppend(false); setReload(value => value + 1); }} />}
     {exportIds && dataset && <ExportDataset dataset={dataset} ids={exportIds} language={language} onClose={() => setExportIds(null)} />}
-  </section>;
+  </section>
+    {dataset && detailTab === 'samples' && <DatasetMetadataPanel dataset={dataset} sources={sources} knowledgeSourceCount={knowledgeSourceCount} language={language} />}
+  </div>;
+}
+
+function DatasetContextSidebar({ dataset, detailTab, language, onBack, onTabChange }: {
+  dataset: Dataset; detailTab: 'samples' | 'evaluations' | 'settings'; language: Language;
+  onBack: () => void; onTabChange: (tab: 'samples' | 'evaluations' | 'settings') => void;
+}) {
+  const t = (value: string) => tr(language, value);
+  const items = [
+    { id: 'samples' as const, label: '样本管理', icon: Database, count: dataset.item_count },
+    { id: 'evaluations' as const, label: '评测记录', icon: Activity },
+    { id: 'settings' as const, label: '设置', icon: Settings2 },
+  ];
+  return <aside className="dataset-context-sidebar" aria-label={t('数据集导航')}>
+    <button type="button" className="dataset-context-back" onClick={onBack}><ArrowLeft aria-hidden="true" />{t('所有评测数据集')}</button>
+    <div className="dataset-context-identity"><span className="dataset-context-icon"><Database aria-hidden="true" /></span><div><strong title={dataset.name}>{dataset.name}</strong><div className="dataset-context-meta"><DatasetStatus dataset={dataset} language={language} /><span>{t(datasetPurposeLabels[dataset.evaluation_purpose || 'both'])}</span></div></div></div>
+    <nav className="dataset-context-nav" aria-label={t('数据集导航')}>
+      {items.map(item => <button type="button" key={item.id} className={detailTab === item.id ? 'active' : ''} aria-current={detailTab === item.id ? 'page' : undefined} onClick={() => onTabChange(item.id)}><item.icon aria-hidden="true" /><span>{t(item.label)}</span>{item.count !== undefined && <b>{item.count}</b>}</button>)}
+    </nav>
+    <div className="dataset-context-footer"><small>{t('数据集详情')}</small></div>
+  </aside>;
+}
+
+function DatasetMetadataPanel({ dataset, sources, knowledgeSourceCount, language }: {
+  dataset: Dataset; sources: DatasetSources | null; knowledgeSourceCount: number; language: Language;
+}) {
+  const t = (value: string) => tr(language, value);
+  const sourceItems = sources?.items?.length ? sources.items : dataset.data_sources || [];
+  const generation = dataset.generation_config || dataset.generation_options || {};
+  const sourceTypeLabels: Record<Dataset['source_type'], string> = {
+    manual: '手动创建', import: '文件导入', documents: '文档生成', dify: 'Dify 知识库', goldens: '种子扩写', scratch: '按任务生成',
+  };
+  const backendLabels: Record<string, string> = { deepeval: 'DeepEval', ragas: 'RAGAS', ragas_native: 'RAGAS 原生生成' };
+  const methodLabels: Record<string, string> = { contexts: '基于上下文', goldens: '种子扩写', scratch: '按任务生成' };
+  const chunkCount = dataset.source_chunk_count ?? sourceItems.reduce((sum, source) => sum + (source.chunk_count || 0), 0);
+  const model = dataset.llm?.model || (generation.llm as LlmSelection | null | undefined)?.model;
+  const sourceType = sourceTypeLabels[dataset.source_type] || dataset.source_type;
+  const formatDate = (value?: string) => value ? new Date(value).toLocaleString(language) : '—';
+  return <aside className="dataset-metadata-panel" aria-label={t('数据集元数据')}>
+    <div className="dataset-metadata-header"><h2>{t('元数据')}</h2><p>{t('数据集来源、规模和生成配置')}</p></div>
+    <section className="dataset-metadata-section">
+      <h3>{t('数据来源')}</h3>
+      <dl className="dataset-metadata-list">
+        <div><dt>{t('来源类型')}</dt><dd>{t(sourceType)}</dd></div>
+        <div><dt>{t('来源数量')}</dt><dd>{knowledgeSourceCount || sourceItems.length || '—'}</dd></div>
+      </dl>
+      {sourceItems.length > 0 ? <ul className="dataset-metadata-sources">{sourceItems.map((source, index) => <li key={`${source.kind}-${source.config_id || source.dataset_id || source.name}-${index}`}><span title={source.name}>{source.name}</span><small>{source.chunk_count ?? 0} {t('个片段')}</small></li>)}</ul> : <p className="dataset-metadata-empty">{t('暂无来源资料')}</p>}
+    </section>
+    <section className="dataset-metadata-section">
+      <h3>{t('数据规模')}</h3>
+      <dl className="dataset-metadata-list">
+        <div><dt>{t('知识片段数量')}</dt><dd>{chunkCount}</dd></div>
+        <div><dt>{t('样本数量')}</dt><dd>{dataset.item_count}</dd></div>
+        {dataset.target_size != null && <div><dt>{t('生成目标数量')}</dt><dd>{dataset.target_size}</dd></div>}
+      </dl>
+    </section>
+    <section className="dataset-metadata-section">
+      <h3>{t('生成参数')}</h3>
+      <dl className="dataset-metadata-list">
+        <div><dt>{t('生成方式')}</dt><dd>{t(methodLabels[generation.method || ''] || generation.method || '—')}</dd></div>
+        <div><dt>{t('生成后端')}</dt><dd>{backendLabels[generation.generation_backend || ''] || generation.generation_backend || '—'}</dd></div>
+        <div><dt>{t('生成模型')}</dt><dd title={model || undefined}>{model || t('未记录')}</dd></div>
+        {generation.context_size != null && <div><dt>{t('上下文片段数')}</dt><dd>{generation.context_size}</dd></div>}
+        {generation.quality_threshold != null && <div><dt>{t('质量阈值')}</dt><dd>{generation.quality_threshold}</dd></div>}
+        {generation.max_quality_retries != null && <div><dt>{t('质量重试次数')}</dt><dd>{generation.max_quality_retries}</dd></div>}
+        {generation.num_evolutions != null && <div><dt>{t('演化轮数')}</dt><dd>{generation.num_evolutions}</dd></div>}
+      </dl>
+    </section>
+    <section className="dataset-metadata-section dataset-metadata-dates">
+      <h3>{t('时间信息')}</h3>
+      <dl className="dataset-metadata-list">
+        <div><dt>{t('创建时间')}</dt><dd>{formatDate(dataset.created_at)}</dd></div>
+        <div><dt>{t('更新时间')}</dt><dd>{formatDate(dataset.updated_at)}</dd></div>
+      </dl>
+    </section>
+  </aside>;
 }
 
 function ExportDataset({ dataset, ids, language, onClose }: { dataset: Dataset; ids: string[]; language: Language; onClose: () => void }) {
@@ -288,9 +424,8 @@ function BuildProgress({dataset, language, busy, error, onCancel, onRetry}: {dat
   return <div className="dataset-feedback dataset-build-progress">
     <Sparkles aria-hidden="true" />
     <div className="dataset-build-details">
-      <div className="dataset-build-numbers" role="status" aria-live="polite"><strong>{t(generating ? '已完成' : '已取消')} {completed} / {target}</strong><span>{t('条样本')}</span><span>{t('模型请求')} {dataset.build_requests ?? 0} {t('次')}</span><span>{t('连续失败重试')} {dataset.build_retry_count ?? 0} / {dataset.build_retry_limit ?? 2}</span></div>
+      <div className="dataset-build-numbers" role="status" aria-live="polite"><strong>{t(generating ? '已完成' : '已取消')} {completed} / {target}</strong><span>{t('条样本')}</span><span>{t('模型请求')} {dataset.build_requests ?? 0} {t('次')}</span></div>
       <progress aria-label={t('构建进度')} value={completed} max={Math.max(1, target)} />
-      <small>{t(!generating ? dataset.build_mode === 'regenerate_answers' ? '答案重新生成已停止，已完成的新答案保留。' : dataset.build_mode === 'replace_generated' ? '已停止生成，原有数据已保留。重新开始会重新生成整批样本。' : '已停止生成，已保存的样本保留。' : dataset.build_mode === 'regenerate_answers' ? '只更新参考答案，问题、上下文和来源保持不变。每 2 秒自动更新；连续失败最多重试 2 次。' : dataset.build_stage === 'sources' ? '正在读取来源资料…' : '每 2 秒自动更新；连续失败最多重试 2 次。')}{generating && !!dataset.build_active_requests && <> · {t('进行中')} {dataset.build_active_requests} · {t('当前请求已等待')} {waiting} {t('秒')}</>}</small>
       {dataset.build_last_error && <small className="error-text">{dataset.build_last_error}</small>}
       {generating && error && <small className="error-text" role="alert">{t('进度更新失败，正在重新连接…')}</small>}
     </div>
@@ -330,6 +465,8 @@ function CreateDataset({ catalog, language, initialDifyConfigId, onClose, onCrea
   const [seed, setSeed] = useState('');
   const [seeds, setSeeds] = useState<Dataset[]>([]);
   const [advanced, setAdvanced] = useState(defaultGenerationOptions);
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState('');
 
   const [llm, setLlm] = useState('');
   const [dify, setDify] = useState<string[]>(initialDifyConfigId ? [initialDifyConfigId] : []);
@@ -361,6 +498,27 @@ function CreateDataset({ catalog, language, initialDifyConfigId, onClose, onCrea
   const invalidEmbedding = advanced.generation_backend === 'ragas_native' && (!effectiveEmbedding || !embeddingChoices(catalog, language).some(choice => choice.value === selectionValue(effectiveEmbedding)));
   const staleDefault = !!settings?.default_llm && !choices.some(value => value.value === selectionValue(settings.default_llm));
   const staleCritic = advanced.generation_backend === 'deepeval' && !advanced.critic_llm && !!settings?.default_critic_llm && !choices.some(value => value.value === selectionValue(settings.default_critic_llm));
+  async function enterRawMode() {
+    try {
+      const preview = await datasetApi.generationPrompt({ backend: advanced.generation_backend, prompt: settings?.prompt || '', include_expected_output: advanced.include_expected_output, method });
+      let model: unknown = null;
+      try { model = llm ? JSON.parse(llm) : null; } catch { model = null; }
+      setRawText(JSON.stringify({ system_prompt: preview.system_prompt, generation_options: advanced, size, method, llm: model }, null, 2));
+      setRawMode(true); setError('');
+    } catch (reason) { setError(message(reason)); }
+  }
+  function parseRawConfig(raw: string) {
+    const root = JSON.parse(raw) as Record<string, unknown>;
+    if (!root || Array.isArray(root) || typeof root !== 'object') throw new Error(t('请填写有效的生成配置 JSON。'));
+    const options = root.generation_options && typeof root.generation_options === 'object' && !Array.isArray(root.generation_options) ? root.generation_options as Record<string, unknown> : {};
+    const nextAdvanced = { ...advanced };
+    for (const key of Object.keys(nextAdvanced)) if (key in options) (nextAdvanced as Record<string, unknown>)[key] = options[key];
+    if (typeof root.system_prompt === 'string') nextAdvanced.system_prompt_override = root.system_prompt;
+    const nextLlm = root.llm == null ? '' : typeof root.llm === 'string' ? root.llm : JSON.stringify(root.llm);
+    const nextSize = Number.isInteger(root.size) && Number(root.size) >= 1 && Number(root.size) <= 500 ? Number(root.size) : size;
+    const nextMethod = (['contexts', 'goldens', 'scratch'].includes(String(root.method)) ? String(root.method) : method) as 'contexts' | 'goldens' | 'scratch';
+    return { advanced: nextAdvanced, llm: nextLlm, size: nextSize, method: nextMethod };
+  }
   useEffect(() => {
     let active = true;
     datasetApi.settings().then(value => { if (active) setSettings(value); }).catch(reason => { if (active) setSettingsError(message(reason)); }).finally(() => { if (active) setLoading(false); });
@@ -375,9 +533,10 @@ function CreateDataset({ catalog, language, initialDifyConfigId, onClose, onCrea
         const form = new FormData(); form.set('name', name); form.set('evaluation_purpose', purpose);
         if (mode === 'import' && !ai) { form.set('file', files[0]); value = await datasetApi.import(form); }
         else {
-          const generationModel = llm ? JSON.parse(llm) : null;
-          const criticModel = advanced.generation_backend !== 'deepeval' ? null : advanced.critic_llm === 'generation' ? generationModel || settings?.default_llm || null : advanced.critic_llm ? JSON.parse(advanced.critic_llm) : null;
-          form.set('options', JSON.stringify({ ...advanced, size, method, seed_dataset_id: method === 'goldens' ? seed : null, critic_llm: criticModel, llm: generationModel, dify_config_ids: mode === 'dify' ? dify : [], language }));
+          const current = rawMode ? parseRawConfig(rawText) : { advanced, llm, size, method };
+          const generationModel = current.llm ? JSON.parse(current.llm) : null;
+          const criticModel = current.advanced.generation_backend !== 'deepeval' ? null : current.advanced.critic_llm === 'generation' ? generationModel || settings?.default_llm || null : current.advanced.critic_llm ? JSON.parse(current.advanced.critic_llm) : null;
+          form.set('options', JSON.stringify({ ...current.advanced, size: current.size, method: current.method, seed_dataset_id: current.method === 'goldens' ? seed : null, critic_llm: criticModel, llm: generationModel, dify_config_ids: mode === 'dify' ? dify : [], language }));
           files.forEach(file => form.append('files', file));
           value = await datasetApi.generate(form);
         }
@@ -396,11 +555,13 @@ function CreateDataset({ catalog, language, initialDifyConfigId, onClose, onCrea
     {purpose === 'retrieval' && <p className="field-help">{t('检索评测必须使用 Dify 知识库返回的真实分段 ID，因此不支持手动添加、导入文件或从本地文档生成。')}</p>}
     {generate && <><label className="field"><span className="label-with-tip">{t('目标数据集大小')}<InfoTip label={t('查看说明')} text={t('1–500 条问答；有效数据不足时保留已有结果并提示重试。')} /></span><input aria-label={t('目标数据集大小')} required type="number" min={1} max={500} step={1} disabled={busy} value={size} onChange={event => setSize(Number(event.target.value))} /></label>
       <div className="field"><span className="label-with-tip">{t('生成模型')}<InfoTip label={t('查看说明')} text={t('会调用所选 LLM 并产生相应费用。')} /></span><SearchableSelect label={t('生成模型')} language={language} disabled={busy} value={llm} onChange={setLlm} options={[{ value: '', label: t('使用空间默认模型') + (settings?.default_llm ? ` · ${settings.default_llm.model}` : ` · ${t('未配置')}`) }, ...choices]} />{!llm && staleDefault && <small className="error-text">{t('原默认模型已失效，请重新选择')}</small>}</div>
-      <GenerationControls value={advanced} onChange={setAdvanced} catalog={catalog} language={language} disabled={busy} scratch={method === 'scratch'} contexts={method === 'contexts'} settings={settings} staleCritic={staleCritic} purpose={purpose} />
+      {!rawMode && <GenerationControls value={advanced} onChange={setAdvanced} catalog={catalog} language={language} disabled={busy} scratch={method === 'scratch'} contexts={method === 'contexts'} settings={settings} staleCritic={staleCritic} purpose={purpose} />}
+      <label className="dataset-check"><input type="checkbox" checked={rawMode} disabled={busy || loading} onChange={event => { if (event.target.checked) void enterRawMode(); else { try { const next = parseRawConfig(rawText); setAdvanced(next.advanced); setLlm(next.llm); setSize(next.size); setRawMode(false); setError(''); } catch (reason) { setError(reason instanceof Error ? reason.message : t('请填写有效的生成配置 JSON。')); } } }} />{t('原始编辑模式')}</label>
+      {rawMode && <><p className="workspace-muted">{t('直接查看和编辑实际发送给生成模型的最终系统提示词及原始生成配置。保存时会按 JSON 内容应用配置。')}</p><label className="field"><span>Generation JSON</span><textarea aria-label="Generation JSON" className="dataset-json" rows={22} required value={rawText} disabled={busy} onChange={event => setRawText(event.target.value)} /></label></>}
       {settingsError && <p className="error-text" role="alert">{settingsError}</p>}
     </>}
     {error && <p className="error-text" role="alert">{error}</p>}
-  </div><div className="workspace-dialog-footer"><button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button><button className="primary compact" disabled={busy || !name.trim() || (needsFiles && (!files.length || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (method === 'goldens' && !seed) || (method === 'scratch' && !advanced.task.trim()) || (mode === 'dify' && !dify.length) || (generate && (loading || staleCritic || invalidEmbedding || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || (!llm && (!settings?.default_llm || staleDefault))))}>{generate ? <Sparkles aria-hidden="true" /> : <FileUp aria-hidden="true" />}{t(busy ? '提交中…' : generate ? '开始构建' : mode === 'manual' ? '创建' : '导入数据集')}</button></div></form></WorkspaceDialog>;
+  </div><div className="workspace-dialog-footer"><button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button><button className="primary compact" disabled={busy || !name.trim() || (needsFiles && (!files.length || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (method === 'goldens' && !seed) || (method === 'scratch' && !advanced.task.trim()) || (mode === 'dify' && !dify.length) || (generate && !rawMode && (loading || staleCritic || invalidEmbedding || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || (!llm && (!settings?.default_llm || staleDefault))))}>{generate ? <Sparkles aria-hidden="true" /> : <FileUp aria-hidden="true" />}{t(busy ? '提交中…' : generate ? '开始构建' : mode === 'manual' ? '创建' : '导入数据集')}</button></div></form></WorkspaceDialog>;
 }
 
 const defaultGenerationOptions = {
@@ -409,7 +570,7 @@ const defaultGenerationOptions = {
   critic_llm: '', include_expected_output: true, quality_threshold: 0.5, max_quality_retries: 3,
   num_evolutions: 1, context_size: 2,
   evolutions: { CONCRETIZING: 1, CONSTRAINED: 1, COMPARATIVE: 1 } as Record<string, number>,
-  task: '', scenario: '', input_format: '', expected_output_format: '',
+  task: '', scenario: '', input_format: '', expected_output_format: '', system_prompt_override: '',
 };
 const styleHelp = {
   task: '说明想生成什么内容。例如：“围绕产品退换货政策生成客服问答”。留空时使用空间构建提示词。',
@@ -613,7 +774,7 @@ function GenerationControls({ value, onChange, catalog, language, disabled, scra
         ['quality_threshold', '质量阈值', 0, 1, 0.05, '范围 0–1，默认 0.5。越高越严格，低于阈值的问题会尝试改写；可能增加耗时和费用。达到评审上限后仍可能保留低分项。'],
         ['max_quality_retries', '质量评审次数上限', 1, 5, 1, '范围 1–5，默认 3。限制低分问题的质量评审尝试次数；调高可增加改写机会，也会增加模型调用。'],
         ['num_evolutions', '演化轮数', 0, 3, 1, '范围 0–3，默认 1。对每个初始问题做几轮改写，让问题更具体或更多样；0 表示不演化。轮数越多，调用越多。'],
-        ['context_size', '每组上下文片段数', 1, 5, 1, '范围 1–5，默认 2。每批选取多少个资料片段供模型出题。增加可覆盖更多信息，也会增加输入长度；仅文档和 Dify 生成生效。'],
+        ['context_size', '每组上下文片段数上限', 1, 5, 1, '范围 1–5，默认 2。每组最多提供多少个资料片段供模型出题，实际使用的片段数可以少于上限；仅文档和 Dify 生成生效。'],
       ] as const).filter(([key]) => deepEval).map(([key, label, min, max, step, help]) => <GenerationSlider key={key} label={t(label)} helpId={`generation-${key}-help`} help={key === 'quality_threshold' ? [t(help), t('DeepEval 达到评审次数上限后仍可能保留低分项；质量分与待复核标记保存在 additional_metadata。')].join(' ') : t(help)} min={min} max={max} step={step} disabled={disabled} value={value[key]} language={language} onChange={next => change(key, next)} />)}</div>
       {deepEval && <EvolutionSettings weights={value.evolutions} rounds={value.num_evolutions} scratch={scratch} disabled={disabled} language={language} onChange={next => change('evolutions', next)} />}
     </div></details>
@@ -636,7 +797,7 @@ function ItemEditor({ item, dataset, language, onClose, onSaved }: { item: Datas
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const readOnly = dataset.status === 'generating';
-  return <WorkspaceDialog title={t(item ? '查看或编辑数据项' : '添加数据项')} language={language} busy={busy} onClose={onClose}><form onSubmit={async event => {
+  return <WorkspaceDialog className="dataset-item-drawer" title={t(item ? '查看或编辑数据项' : '添加数据项')} language={language} busy={busy} onClose={onClose}><form onSubmit={async event => {
     event.preventDefault(); if (readOnly) return; setError('');
     let value;
     try {
@@ -680,7 +841,7 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
 }) {
   const t = (value: string) => tr(language, value);
   const { max_concurrent: _legacyConcurrency, ...config } = dataset.generation_config || dataset.generation_options || {};
-  const [advanced, setAdvanced] = useState({ ...defaultGenerationOptions, ...config, generation_backend: config?.generation_backend === 'ragas' ? 'deepeval' : (config?.generation_backend || 'deepeval'),
+  const [advanced, setAdvanced] = useState({ ...defaultGenerationOptions, ...config, system_prompt_override: config?.system_prompt_override || '', generation_backend: config?.generation_backend === 'ragas' ? 'deepeval' : (config?.generation_backend || 'deepeval'),
     include_expected_output: config?.include_expected_output ?? dataset.evaluation_purpose !== 'retrieval',
     critic_llm: selectionValue(config?.critic_llm || null), evolutions: config?.evolutions || defaultGenerationOptions.evolutions });
   const [llm, setLlm] = useState(selectionValue(config?.llm || null));
@@ -695,6 +856,8 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
   const [purpose, setPurpose] = useState<DatasetPurpose>(dataset.evaluation_purpose || 'both');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [jsonMode, setJsonMode] = useState(false);
+  const [jsonText, setJsonText] = useState('');
   const retrievalOnly = dataset.evaluation_purpose === 'retrieval';
   const choices = llmChoices(catalog, language);
   const difyChoices = catalog?.benchmarks.find(value => value.id === 'dify-retrieve')?.providers || [];
@@ -704,6 +867,40 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
   const hasContexts = (sources?.items.length || 0) > 0;
   const answersOnly = buildMode === 'regenerate_answers';
   const missingSource = method === 'contexts' ? !hasContexts : method === 'goldens' ? !dataset.item_count : !advanced.task.trim();
+  function jsonSnapshot() {
+    let model: unknown = null;
+    try { model = llm ? JSON.parse(llm) : null; } catch { model = null; }
+    return JSON.stringify({
+      system_prompt: dataset.generation_system_prompt || advanced.system_prompt_override || prompt.trim() || settings?.prompt || '',
+      generation_options: advanced,
+      size, method, llm: model,
+    }, null, 2);
+  }
+  function parseJsonConfig(raw: string) {
+    const root = JSON.parse(raw) as Record<string, unknown>;
+    if (!root || Array.isArray(root) || typeof root !== 'object') throw new Error(t('请填写有效的生成配置 JSON。'));
+    const options = root.generation_options && typeof root.generation_options === 'object' && !Array.isArray(root.generation_options)
+      ? root.generation_options as Record<string, unknown> : {};
+    const nextAdvanced = { ...advanced };
+    for (const key of Object.keys(nextAdvanced)) {
+      if (!(key in options)) continue;
+      const value = options[key];
+      if (key === 'critic_llm' && value && typeof value === 'object') (nextAdvanced as Record<string, unknown>)[key] = JSON.stringify(value);
+      else (nextAdvanced as Record<string, unknown>)[key] = value;
+    }
+    const nextLlm = root.llm == null ? '' : typeof root.llm === 'string' ? root.llm : JSON.stringify(root.llm);
+    const nextPrompt = typeof root.dataset_prompt === 'string' ? root.dataset_prompt : prompt;
+    const nextSystemPrompt = typeof root.system_prompt === 'string' ? root.system_prompt : typeof options.system_prompt_override === 'string' ? options.system_prompt_override : advanced.system_prompt_override;
+    if (nextSystemPrompt) (nextAdvanced as Record<string, unknown>).system_prompt_override = nextSystemPrompt;
+    const nextSize = Number.isInteger(root.size) && Number(root.size) >= 1 && Number(root.size) <= 500 ? Number(root.size) : size;
+    const nextMethod = (['contexts', 'goldens', 'scratch'].includes(String(root.method)) ? String(root.method) : method) as 'contexts' | 'goldens' | 'scratch';
+    return { advanced: nextAdvanced, llm: nextLlm, prompt: nextPrompt, size: nextSize, method: nextMethod };
+  }
+  function applyJsonConfig(raw: string) {
+    const next = parseJsonConfig(raw);
+    setAdvanced(next.advanced); setLlm(next.llm); setPrompt(next.prompt); setSize(next.size); setMethod(next.method);
+    return next;
+  }
   useEffect(() => { if (retrievalOnly && method !== 'contexts') setMethod('contexts'); }, [retrievalOnly, method]);
   useEffect(() => {
     if (mode !== 'config') return;
@@ -717,11 +914,12 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
     try {
       let value: Dataset;
       if (mode === 'config') {
-        const generationModel = llm ? JSON.parse(llm) : null;
-        if (advanced.generation_backend === 'deepeval' && advanced.critic_llm === 'generation' && !generationModel && !settings?.default_llm) throw new Error(t('请先选择生成模型，或在空间设置中配置默认模型。'));
-        const criticModel = advanced.generation_backend !== 'deepeval' ? null : advanced.critic_llm === 'generation' ? generationModel || settings?.default_llm : advanced.critic_llm ? JSON.parse(advanced.critic_llm) : null;
-        value = await datasetApi.configure(dataset.id, { ...advanced, llm: generationModel, critic_llm: criticModel,
-          size, method, seed_dataset_id: method === 'goldens' ? dataset.id : null, dify_config_id: null, dify_config_ids: [], prompt: prompt.trim() ? prompt : null, language });
+        const current = jsonMode ? applyJsonConfig(jsonText) : { advanced, llm, prompt, size, method };
+        const generationModel = current.llm ? JSON.parse(current.llm) : null;
+        if (current.advanced.generation_backend === 'deepeval' && current.advanced.critic_llm === 'generation' && !generationModel && !settings?.default_llm) throw new Error(t('请先选择生成模型，或在空间设置中配置默认模型。'));
+        const criticModel = current.advanced.generation_backend !== 'deepeval' ? null : current.advanced.critic_llm === 'generation' ? generationModel || settings?.default_llm : current.advanced.critic_llm ? JSON.parse(current.advanced.critic_llm) : null;
+        value = await datasetApi.configure(dataset.id, { ...current.advanced, llm: generationModel, critic_llm: criticModel,
+          size: current.size, method: current.method, seed_dataset_id: current.method === 'goldens' ? dataset.id : null, dify_config_id: null, dify_config_ids: [], prompt: current.prompt.trim() ? current.prompt : null, language });
       } else if (mode === 'documents') {
         const form = new FormData(); files.forEach(file => form.append('files', file));
         value = await datasetApi.documents(dataset.id, form);
@@ -741,7 +939,15 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
       {retrievalOnly ? <p className="field-help">{t('检索评测数据集固定使用已同步的 Dify 知识库片段，不支持手动、导入文档或按任务生成。')}</p> : <label className="field"><span>{t('生成方式')}</span><select aria-label={t('生成方式')} disabled={busy} value={method} onChange={event => setMethod(event.target.value as typeof method)}><option value="contexts">{t('从已导入的资料生成')}</option><option value="goldens">{t('扩写当前数据集')}</option><option value="scratch">{t('按任务生成')}</option></select></label>}
       <label className="field"><span className="label-with-tip">{t('每次生成数量')}<InfoTip label={t('查看说明')} text={t('每次生成 1–500 条新数据，追加时不包含已有条数。')} /></span><input aria-label={t('每次生成数量')} required type="number" min={1} max={500} step={1} disabled={busy} value={size} onChange={event => setSize(Number(event.target.value))} /></label>
       <GenerationControls value={advanced} onChange={setAdvanced} catalog={catalog} language={language} disabled={dataset.status === 'generating' || busy || loading} scratch={method === 'scratch'} contexts={method === 'contexts'} settings={settings} staleCritic={staleCritic} purpose={dataset.evaluation_purpose || 'both'} reviewOutside />
-      <label className="field"><span className="label-with-tip">{t('数据集专用提示词')}<InfoTip label={t('查看说明')} text={t('留空时使用空间构建提示词；填写后仅影响当前数据集的后续生成。')} /></span><textarea aria-label={t('数据集专用提示词')} rows={5} maxLength={20000} disabled={busy} value={prompt} onChange={event => setPrompt(event.target.value)} /></label>
+      <label className="dataset-check"><input type="checkbox" checked={jsonMode} disabled={busy || loading} onChange={event => {
+        if (event.target.checked) { setJsonText(jsonSnapshot()); setJsonMode(true); setError(''); return; }
+        try { applyJsonConfig(jsonText); setJsonMode(false); setError(''); }
+        catch (reason) { setError(reason instanceof Error ? reason.message : t('请填写有效的生成配置 JSON。')); }
+      }} />{t('原始编辑模式')}</label>
+      {jsonMode ? <>
+        <p className="workspace-muted">{t('这里显示并编辑实际发送给生成模型的最终系统提示词、生成参数、生成数量、生成方式与模型选择。')}</p>
+        <label className="field"><span>Generation JSON</span><textarea aria-label="Generation JSON" className="dataset-json" rows={22} required value={jsonText} disabled={busy} onChange={event => setJsonText(event.target.value)} /></label>
+      </> : <label className="field"><span className="label-with-tip">{t('数据集专用提示词')}<InfoTip label={t('查看说明')} text={t('留空时使用空间构建提示词；填写后仅影响当前数据集的后续生成。')} /></span><textarea aria-label={t('数据集专用提示词')} rows={5} maxLength={20000} disabled={busy} value={prompt} onChange={event => setPrompt(event.target.value)} /></label>}
     </>}
     {mode === 'documents' && <>
       <p className="field-help">{t('文档将作为生成问答的来源资料保存，不会立即调用模型，也不会修改已有问答。重复导入同名同内容文档会自动去重。')}</p>
@@ -763,12 +969,12 @@ function DatasetMaintenance({ mode, dataset, sources, catalog, language, onClose
         <div><dt>{t('已有数据')}</dt><dd>{dataset.item_count}</dd></div>
       </dl>
       <label className="field"><span>{t('构建方式')}</span><select aria-label={t('构建方式')} disabled={busy} value={buildMode} onChange={event => setBuildMode(event.target.value as typeof buildMode)}><option value="append">{t('追加生成（保留全部已有数据）')}</option><option value="replace_generated">{t('重新构建（替换 AI 生成数据）')}</option><option value="regenerate_answers">{t('仅重新生成答案')}</option></select></label>
-      <p className={buildMode === 'replace_generated' ? 'dataset-feedback warning' : 'field-help'}>{t(answersOnly ? '为全部已启用且有参考上下文的样本重新生成答案，覆盖已有答案；问题、上下文和来源保持不变。已归档或无参考上下文的样本会跳过，已完成的新答案会保留。' : buildMode === 'replace_generated' ? '新结果全部生成成功后，才替换原有 AI 生成数据。手工添加、文件导入、人工编辑过及无法确认来源的旧数据会保留；生成失败时原数据不变，重试会重新生成整批数据。' : '生成指定数量的新问答并追加到当前数据集。失败时保留已追加的数据，可继续构建。')}</p>
+      <p className={buildMode === 'replace_generated' ? 'dataset-feedback warning' : 'field-help'}>{t(answersOnly ? '为全部已启用且有参考上下文的样本重新生成答案，覆盖已有答案；问题、上下文和来源保持不变。已归档或无参考上下文的样本会跳过，已完成的新答案会保留。' : buildMode === 'replace_generated' ? '开始重新构建时会先清空原有 AI 生成数据，新结果会逐批入库并显示。手工添加、文件导入、人工编辑过及无法确认来源的旧数据会保留；生成失败时已生成的新数据保留，可继续构建。' : '生成指定数量的新问答并追加到当前数据集。失败时保留已追加的数据，可继续构建。')}</p>
       {!answersOnly && missingSource && <p className="error-text" role="alert">{t('请先在生成配置中选择生成方式并填写任务，或导入文档、同步知识库、添加种子数据后再构建。')}</p>}
     </>}
     {mode === 'build' && answersOnly && !dataset.item_count && <p className="error-text" role="alert">{t('暂无可重新生成答案的样本。')}</p>}
     {error && <p className="error-text" role="alert">{error}</p>}
-  </div><div className="workspace-dialog-footer">{!embedded && <button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>}<button className="primary compact" disabled={dataset.status === 'generating' || busy || loading || (mode === 'config' && (staleLlm || staleCritic || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || !settings || (method === 'scratch' && !advanced.task.trim()))) || (mode === 'documents' && (!files.length || files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (mode === 'dify' && !dify.length) || (mode === 'build' && (answersOnly ? !dataset.item_count : missingSource))}>{t(busy ? '提交中…' : mode === 'config' ? '保存配置' : mode === 'documents' ? '导入文档' : mode === 'dify' ? '导入来源' : answersOnly ? '开始重新生成答案' : buildMode === 'replace_generated' ? '开始重新构建' : '开始追加生成')}</button></div></form></SettingsContainer>;
+  </div><div className="workspace-dialog-footer">{!embedded && <button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>}<button className="primary compact" disabled={dataset.status === 'generating' || busy || loading || (mode === 'config' && !jsonMode && (staleLlm || staleCritic || !validEvolutionSettings(advanced, method === 'scratch') || !validRagasDistribution(advanced) || !settings || (method === 'scratch' && !advanced.task.trim()))) || (mode === 'documents' && (!files.length || files.length > 20 || files.reduce((sum, file) => sum + file.size, 0) > 10 * 1024 * 1024)) || (mode === 'dify' && !dify.length) || (mode === 'build' && (answersOnly ? !dataset.item_count : missingSource))}>{t(busy ? '提交中…' : mode === 'config' ? '保存配置' : mode === 'documents' ? '导入文档' : mode === 'dify' ? '导入来源' : answersOnly ? '开始重新生成答案' : buildMode === 'replace_generated' ? '开始重新构建' : '开始追加生成')}</button></div></form></SettingsContainer>;
 }
 
 function DatasetPurposeField({value,onChange,language,disabled}:{value:DatasetPurpose;onChange:(value:DatasetPurpose)=>void;language:Language;disabled:boolean}) {

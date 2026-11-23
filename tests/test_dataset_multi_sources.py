@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from backend.datasets import DatasetItem, GenerationOptions
+from backend.dataset_annotations import current_annotation
+from backend.datasets import DatasetItem, GenerationOptions, attach_source_annotations
 from backend.store import utc_now
 from tests import test_datasets as fixtures
 
@@ -22,6 +23,30 @@ class DatasetMultiSourceTests(unittest.TestCase):
     def chunk(self, config, key):
         return [{'id': 'kb-1', 'content': f'Private content {config["id"]}',
                  'metadata': {'segment_id': f'segment-{config["id"]}', 'document_name': 'Same document'}}]
+
+    def test_retrieval_generation_does_not_fallback_to_batch_segment_id(self):
+        chunks = [{'id': 'local-1', 'content': 'Original source',
+                   'metadata': {'segment_id': 'segment-1'}}]
+        items = [DatasetItem(input='Generated question').model_dump(mode='json')]
+        annotated = attach_source_annotations(items, chunks, fallback_to_batch=True)
+        self.assertNotIn('source_ids', annotated[0].get('additional_metadata', {}).get('prismlab_generation', {}))
+
+    def test_existing_deepeval_provenance_sources_do_not_restore_retrieval_annotation(self):
+        item = {'additional_metadata': {'prismlab_generation': {
+            'sources': [{'segment_id': 'segment-1'}]}}}
+        annotation = current_annotation(item, {})
+        self.assertNotIn('relevant_chunk_ids', annotation)
+
+    def test_deepeval_retrieval_build_does_not_persist_unverified_batch_annotation(self):
+        self.knowledge('a')
+        with patch('backend.datasets.fetch_dify_chunks', side_effect=self.chunk), patch(
+                'backend.datasets.generate_items',
+                return_value=[DatasetItem(input='Generated question').model_dump(mode='json')]):
+            response = self.generate(['a'], size=1)
+        self.assertEqual(response.status_code, 202, response.text)
+        item = self.repo.items(response.json()['id'])['items'][0]
+        provenance = item['additional_metadata']['prismlab_generation']
+        self.assertNotIn('source_ids', provenance)
 
     def generate(self, ids, **extra):
         return self.client.post('/api/datasets/generate', data={'name': 'Multiple knowledge',
@@ -130,6 +155,27 @@ class DatasetMultiSourceTests(unittest.TestCase):
         self.assertEqual(self.repo.get(identifier)['status'], 'ready')
         self.assertEqual(self.repo.get(identifier)['item_count'], 4)
         self.assertEqual(len(self.repo.sources(identifier)), 2)
+
+    def test_retrieval_deepeval_build_overrides_stale_multi_context_setting(self):
+        for source in ['a', 'b']:
+            self.knowledge(source)
+        with patch('backend.datasets.fetch_dify_chunks', side_effect=self.chunk), patch(
+                'backend.datasets.generate_items', return_value=[DatasetItem(input='Original').model_dump()]):
+            identifier = self.generate(['a']).json()['id']
+        self.repo.mutate(identifier, lambda c, d: d.update(
+            generation_options={**d['generation_options'], 'context_size': 2},
+            target_size=1, build_target=1, status='failed'), generating=True)
+        calls = []
+
+        def make(chunks, count, *args):
+            calls.append(len(chunks))
+            return [DatasetItem(input='Rebuilt').model_dump()]
+
+        with patch('backend.datasets.generate_items', side_effect=make):
+            response = self.client.post(f'/api/datasets/{identifier}/build?mode=replace_generated')
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertTrue(calls)
+        self.assertTrue(all(size == 1 for size in calls))
 
     def test_invalid_or_inaccessible_sources_do_not_create_or_update(self):
         self.knowledge('a')

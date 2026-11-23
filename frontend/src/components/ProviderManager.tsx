@@ -14,6 +14,7 @@ import { ModelTypeFilters } from "./ModelTypeFilters";
 import { updateModelSelection } from "../modelSelection";
 import { PaginatedList, Pagination, usePagination } from "./Pagination";
 import { pageItems } from "../pagination";
+import { useConfirm } from "./ConfirmDialog";
 
 type ModelEditor = {
   kind: { id: string; label: string };
@@ -62,6 +63,7 @@ export function ProviderManager({ configs, benchmarks, language, readOnly = fals
   onChanged: () => Promise<void>;
 }) {
   const t = (value: string) => tr(language, value);
+  const confirm = useConfirm();
   const keyPlaceholder = (provider: string, saved: boolean) => t(saved ? "留空表示使用已保存密钥" : providerPresets[provider]?.apiKeyRequired ? "填写 API Key，或使用服务端已配置的密钥" : "留空表示服务不需要密钥");
   const kinds = useMemo(() => [...new Map(benchmarks.filter((item) => !item.id.startsWith("dify-")).flatMap((item) => item.provider_kinds.map((kind) => [kind.id, kind] as const))).values()], [benchmarks]);
   const [search, setSearch] = useState("");
@@ -290,7 +292,7 @@ export function ProviderManager({ configs, benchmarks, language, readOnly = fals
   async function deleteModel() {
     if (readOnly) return;
     if (!editor?.config || editor.index === null) return;
-    if (!window.confirm(`${t("删除模型")} “${model?.alias || model?.name}”? ${t("此操作无法撤销。")}`)) return;
+    if (!await confirm({ title: t("确认删除吗？"), message: `${t("删除模型")} “${model?.alias || model?.name}”`, detail: t("此操作无法撤销。"), confirmLabel: t("确认删除"), danger: true })) return;
     setBusy(true);
     setNotice("");
     try {
@@ -303,10 +305,12 @@ export function ProviderManager({ configs, benchmarks, language, readOnly = fals
 
   return <section className="dify-providers">
     <PageHeader icon={Search} title={t('模型供应商')} count={visibleGroups.length} description={t(readOnly ? '只读：可使用团队已配置的模型，配置仅限所有者和管理员修改。' : '选择供应商，添加模型并配置对应的服务凭据。')} />
-    <div className="dify-provider-toolbar"><label><Search className="search-icon" aria-hidden="true" /><input aria-label={t("搜索模型或供应商")} value={search} onChange={(event) => { setSearch(event.target.value); setExpanded({}); }} placeholder={t("搜索模型或供应商")} /></label><span>{visibleGroups.length} {t("个供应商")}</span></div>
+    <div className="dify-provider-filters-row">
+      <ModelTypeFilters value={typeFilter} onChange={value => { setTypeFilter(value); setExpanded({}); }} counts={typeCounts} language={language} />
+      <div className="dify-provider-toolbar"><label><Search className="search-icon" aria-hidden="true" /><input aria-label={t("搜索模型或供应商")} value={search} onChange={(event) => { setSearch(event.target.value); setExpanded({}); }} placeholder={t("搜索模型或供应商")} /></label><span>{visibleGroups.length} {t("个供应商")}</span></div>
+    </div>
     {activationError && <p className="alert" role="alert">{activationError}</p>}
     {activationBusy && <p className="field-help" role="status">{t("正在保存启用状态…")}</p>}
-    <ModelTypeFilters value={typeFilter} onChange={value => { setTypeFilter(value); setExpanded({}); }} counts={typeCounts} language={language} />
     <div className="dify-provider-stack">{pageItems(visibleGroups, groupPagination.page, groupPagination.pageSize).map(({ kind, records, models }) => {
       const providerEnabled = records.length > 0 && records.some(config => config.enabled !== false);
       const isOpen = expanded[kind.id] ?? Boolean(search.trim() || typeFilter !== "all");

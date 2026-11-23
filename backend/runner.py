@@ -12,12 +12,13 @@ from backend.secrets import SecretBox
 
 
 class BenchmarkRunner:
-    def __init__(self, store: RunStore, project_root: Path, reports_dir: Path, secret_box: SecretBox, *, allow_environment_credentials=True):
+    def __init__(self, store: RunStore, project_root: Path, reports_dir: Path, secret_box: SecretBox, *, allow_environment_credentials=True, task_queue=None):
         self.store = store
         self.project_root = project_root
         self.reports_dir = reports_dir
         self.secret_box = secret_box
         self.allow_environment_credentials = allow_environment_credentials
+        self.task_queue = task_queue
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.tasks: dict[str, asyncio.Task] = {}
         self.processes: dict[str, asyncio.subprocess.Process] = {}
@@ -61,13 +62,29 @@ class BenchmarkRunner:
             "error": None,
         }
         self.store.create(run)
-        self.tasks[run_id] = asyncio.create_task(self._execute(run_id))
+        if self.task_queue is None:
+            self.tasks[run_id] = asyncio.create_task(self._execute(run_id))
+        else:
+            self.task_queue.enqueue("benchmark", {"run_id": run_id}, job_id=f"benchmark:{run_id}")
         return run
+
+    async def execute_queued(self, run_id: str) -> None:
+        """Execute a run claimed by a dedicated worker process."""
+        await self._execute(run_id)
 
     async def cancel(self, run_id: str) -> bool:
         task = self.tasks.get(run_id)
         if not task or task.done():
-            return False
+            run = self.store.get(run_id)
+            if not run or run.get("status") not in {"queued", "running"}:
+                return False
+            run["status"] = "cancelled"
+            run["finished_at"] = utc_now()
+            for scenario in run.get("scenarios", []):
+                if scenario.get("status") in {"queued", "running"}:
+                    scenario["status"] = "cancelled"
+            self.store.save(run)
+            return True
         process = self.processes.get(run_id)
         if process and process.returncode is None:
             process.terminate()
@@ -88,13 +105,16 @@ class BenchmarkRunner:
 
     async def _execute(self, run_id: str) -> None:
         run = self.store.get(run_id)
-        if not run:
+        if not run or run.get("status") == "cancelled":
             return
         run["status"] = "running"
         run["started_at"] = utc_now()
         self.store.save(run)
         try:
             for index, scenario in enumerate(run["scenarios"]):
+                current = self.store.get(run_id)
+                if current and current.get("status") == "cancelled":
+                    return
                 scenario["status"] = "running"
                 scenario["started_at"] = utc_now()
                 self.store.save(run)
@@ -127,7 +147,19 @@ class BenchmarkRunner:
                 log = ""
                 last_saved = asyncio.get_running_loop().time()
                 assert process.stdout is not None
-                while line := await process.stdout.readline():
+                while True:
+                    try:
+                        line = await asyncio.wait_for(process.stdout.readline(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        current = self.store.get(run_id)
+                        if current and current.get("status") == "cancelled":
+                            if process.returncode is None:
+                                process.terminate()
+                            await process.wait()
+                            return
+                        continue
+                    if not line:
+                        break
                     decoded = line.decode("utf-8", errors="replace")
                     log = (log + decoded)[-8000:]
                     scenario["log"] = log
@@ -162,6 +194,9 @@ class BenchmarkRunner:
                 scenario["finished_at"] = utc_now()
                 run["completed_scenarios"] = index + 1
                 self.store.save(run)
+                current = self.store.get(run_id)
+                if current and current.get("status") == "cancelled":
+                    return
             run["status"] = (
                 "completed"
                 if any(item["status"] == "completed" for item in run["scenarios"])

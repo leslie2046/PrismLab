@@ -57,6 +57,16 @@ class RepositoryLayoutTests(unittest.TestCase):
 
         compose = yaml.safe_load((ROOT / "docker" / "compose.yaml").read_text())
         self.assertEqual(compose["services"]["db"]["image"], "postgres:16")
+        worker = compose["services"]["evaluation-worker"]
+        self.assertEqual(worker["image"], "prismlab-api:local")
+        self.assertEqual(worker["command"][:3], ["python", "-m", "cli.evaluation_worker"])
+        self.assertEqual(worker["depends_on"]["db"]["condition"], "service_healthy")
+        self.assertEqual(compose["services"]["api"]["environment"]["EVALUATION_EMBEDDED_WORKER"], "false")
+        task_worker = compose["services"]["worker"]
+        self.assertEqual(task_worker["image"], "prismlab-api:local")
+        self.assertEqual(task_worker["command"][:3], ["python", "-m", "cli.worker"])
+        self.assertEqual(task_worker["depends_on"]["db"]["condition"], "service_healthy")
+        self.assertEqual(compose["services"]["api"]["environment"]["PRISMLAB_DURABLE_TASKS"], "true")
         self.assertNotIn("ports", compose["services"]["db"])
         self.assertEqual(compose["services"]["api"]["depends_on"]["db"]["condition"], "service_healthy")
         self.assertIn("DATABASE_URL", compose["services"]["api"]["environment"])

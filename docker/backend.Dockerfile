@@ -21,5 +21,6 @@ COPY audio ./audio
 VOLUME ["/app/volumes"]
 EXPOSE 8000
 
-# Keep one API worker: it owns the local task scheduler and benchmark subprocesses.
+# Keep one API worker: it owns the local plan scheduler. Durable worker
+# containers own benchmark subprocesses and other long-running jobs.
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

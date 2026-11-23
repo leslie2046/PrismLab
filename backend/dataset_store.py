@@ -98,12 +98,33 @@ class DatasetStore:
             self.insert_items(connection, dataset, items, 'generated' if generating else origin)
         return self.mutate(identifier, action, generating=generating, build_token=build_token)
 
+    @classmethod
+    def remove_generated_items(cls, connection, identifier, dataset):
+        rows = connection.execute('SELECT id,payload FROM dataset_items WHERE dataset_id=%s', (identifier,)).fetchall()
+        generated = []
+        for row in rows:
+            item = json.loads(row['payload'])
+            if cls.is_generated(item, dataset):
+                generated.append(item)
+        ids = [item['id'] for item in generated]
+        if not ids:
+            return 0
+        trace_ids = list({item.get('generation_trace_id') for item in generated if item.get('generation_trace_id')})
+        connection.execute('DELETE FROM dataset_items WHERE dataset_id=%s AND id=ANY(%s)', (identifier, ids))
+        if trace_ids:
+            connection.execute('DELETE FROM dataset_generation_records WHERE dataset_id=%s AND trace_id=ANY(%s)', (identifier, trace_ids))
+            connection.execute('DELETE FROM dataset_generation_traces WHERE dataset_id=%s AND id=ANY(%s)', (identifier, trace_ids))
+        dataset['item_count'] -= len(ids)
+        return len(ids)
+
+    def clear_generated(self, identifier, *, build_token=None):
+        def action(connection, dataset):
+            self.remove_generated_items(connection, identifier, dataset)
+        return self.mutate(identifier, action, generating=True, build_token=build_token)
+
     def replace_generated(self, identifier, items, *, build_token=None):
         def action(connection, dataset):
-            rows = connection.execute('SELECT id,payload FROM dataset_items WHERE dataset_id=%s', (identifier,)).fetchall()
-            ids = [row['id'] for row in rows if self.is_generated(json.loads(row['payload']), dataset)]
-            connection.execute('DELETE FROM dataset_items WHERE dataset_id=%s AND id=ANY(%s)', (identifier, ids))
-            dataset['item_count'] -= len(ids)
+            self.remove_generated_items(connection, identifier, dataset)
             self.insert_items(connection, dataset, items, 'generated')
             dataset.update(status='ready', error=None, build_progress=len(items))
         return self.mutate(identifier, action, generating=True, build_token=build_token)

@@ -24,7 +24,7 @@ The console includes model search and type filters, YAML-driven LLM parameters, 
 - **Collaboration:** invite specific existing users, switch spaces, and customize your nickname and avatar.
 - **Responsive data loading:** paginated lists, independently loaded home-page data, and compressed responses in the Docker deployment.
 
-The web application uses **PostgreSQL**; SQLite is supported only as a source for the one-time migration tool. Docker Compose includes PostgreSQL 16. Redis is not required.
+The web application uses **PostgreSQL**; SQLite is supported only as a source for the one-time migration tool. Docker Compose includes PostgreSQL 16, a quality-evaluation worker, and a durable application worker. Redis is not required.
 
 Provider presets include Moonshot (Kimi), Qwen, MiniMax, Volcengine Ark, DeepSeek, SiliconFlow, Xinference, vLLM, Alibaba Cloud, Xunfei MaaS, and Huawei Cloud. Qwen is a separate provider from Alibaba Cloud Model Studio; existing configurations are unchanged. Available test types and model discovery depend on the provider and deployed model; not every provider supports every type. See [provider setup](docs/model-discovery.md#新增云供应商).
 
@@ -78,7 +78,7 @@ PostgreSQL data is stored in the Compose `postgres_data` named volume; encryptio
 
 For separate build/start steps, use `bash docker/build.sh` then `bash docker/start.sh` on Linux/macOS, or `.\docker\build.ps1` then `.\docker\start.ps1` in Windows PowerShell. The start script uses existing images and does not build them. See the [Docker deployment guide](docker/README.md) for offline image packaging and startup troubleshooting.
 
-Inside Docker, `127.0.0.1` refers to the container, not your host. For a model running on the host, use an address reachable from the API container (for example, `host.docker.internal` on Docker Desktop), and check service binding and firewall rules.
+Inside Docker, `127.0.0.1` refers to the container, not your host. For a model running on the host, use an address reachable from the API and worker containers (for example, `host.docker.internal` on Docker Desktop), and check service binding and firewall rules.
 
 ### Option B: Local development
 
@@ -103,7 +103,7 @@ pnpm run dev --host 127.0.0.1
 
 Open **http://localhost:5173**. Vite forwards `/api` requests to the backend on port 8000. If Vite selects another port, use the URL printed in its terminal.
 
-Application data is stored in PostgreSQL via `DATABASE_URL`; local encryption keys and report files default to `backend/volumes/`. See [PostgreSQL setup and SQLite migration](docs/postgresql.md). Keep **one API worker / instance** because the scheduler and benchmark subprocesses remain process-local.
+Application data is stored in PostgreSQL via `DATABASE_URL`; local encryption keys and report files default to `backend/volumes/`. See [PostgreSQL setup and SQLite migration](docs/postgresql.md). Keep **one API worker / instance** because the plan scheduler remains process-local; benchmark execution is delegated to the durable application worker.
 
 Local development defaults to unauthenticated `basic` mode. To develop the sign-in and workspace flow, set `AUTH_MODE=app`, `AUTH_PUBLIC_URL=http://localhost:5173`, and a strong `ADMIN_PASSWORD` in the backend process environment before starting it. The public URL must match the frontend address, including its port.
 

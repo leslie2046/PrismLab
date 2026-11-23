@@ -8,21 +8,24 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
-from backend.bulk import BulkIds, ItemBulk
+from backend.bulk import BulkIds, DatasetBulk, ItemBulk
 from backend.dataset_trace import DatasetTraceStore
 from backend.dataset_build_control import build_state
 from backend.dataset_store import DatasetStore
 from backend.dataset_sources import knowledge_ids, tag_knowledge, summarize_sources
-from backend.datasets import (DEFAULT_CRITIC_PROMPT, DEFAULT_PROMPT, LEGACY_DEFAULT_PROMPT, MAX_UPLOAD, MAX_SOURCE_CHARS, DatasetInfo, DatasetItem, DatasetSettings,
+from backend.datasets import (DEFAULT_CRITIC_PROMPT, DEFAULT_PROMPT, LEGACY_DEFAULT_PROMPT, MAX_UPLOAD, MAX_SOURCE_CHARS, DatasetEvaluationConfig, DatasetInfo, DatasetItem, DatasetSettings,
                               DatasetGenerationConfig, GenerationOptions, build_dataset, regenerate_answers, document_chunks, fetch_dify_chunks, parse_import)
 from backend.ragas_generation import RAGAS_BACKEND_VERSION
 from backend.evaluation_contracts import DEFAULT_JUDGE_PROMPT, generation_engine, model_evidence
 from backend.evaluation_store import EvaluationStore
 from backend.store import utc_now
+from backend.task_queue import TaskQueue, durable_tasks_enabled
 from backend.dataset_golden import golden_dict
+from backend.dataset_quality import quality_report
 from deepeval.dataset.utils import join_context, join_retrieval_context
 from backend.schemas import PlaygroundRequest, ProviderSelection
 from backend.model_configs import configured_models
+from backend.generation_prompt import generation_system_prompt
 
 
 def generation_values(payload, purpose, **kwargs):
@@ -38,6 +41,14 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
     def repo():
         return DatasetStore(concrete_store())
 
+    def dispatch(background_tasks, kind, payload, function, *args, **kwargs):
+        if durable_tasks_enabled():
+            dataset_id = payload['dataset_id']
+            token = payload.get('build_token') or 'current'
+            return TaskQueue(concrete_store()).enqueue(kind, payload, job_id=f'{kind}:{dataset_id}:{token}')
+        background_tasks.add_task(function, *args, **kwargs)
+        return None
+
     def settings():
         value = store.system_settings()
         prompt = value.get('dataset_prompt')
@@ -48,6 +59,9 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                 'evaluation_max_requests': value.get('evaluation_max_requests', 500),
                 'evaluation_max_output_tokens': value.get('evaluation_max_output_tokens', 1000000),
                 'default_llm': value.get('dataset_default_llm'),
+                'generation_thinking_mode': value.get('dataset_generation_thinking_mode', 'auto'),
+                'critic_thinking_mode': value.get('dataset_critic_thinking_mode', 'auto'),
+                'judge_thinking_mode': value.get('dataset_judge_thinking_mode', 'auto'),
                 'default_embedding_model': value.get('dataset_default_embedding_model'),
                 'default_critic_llm': value.get('dataset_default_critic_llm'),
                 'default_judge_llm': value.get('evaluation_default_judge'),
@@ -72,7 +86,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         return resolve_access(PlaygroundRequest(benchmark='llm', provider_id=selection['id'],
                               model=selection.get('model'), credential_id=credential_id, query='generate dataset'))
 
-    def resolve_llm(selection):
+    def resolve_llm(selection, role='generation'):
         if not selection:
             raise HTTPException(400, '请先在空间设置中选择构建数据集的默认 LLM，或在此处选择模型')
         selection = ProviderSelection.model_validate(selection).model_dump()
@@ -84,6 +98,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         if model and not model.get('credentials') and model.get('base_url'):
             credential_id = 'legacy'
         selection.update(credential_id=credential_id, model=(model.get('alias') or model['name']) if model else config['model'])
+        config['thinking_mode'] = settings().get(f'{role}_thinking_mode', 'auto')
         return selection, config, key
 
     def resolve_embedding(selection):
@@ -137,6 +152,16 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
     def get_settings():
         return settings()
 
+    @router.get('/dataset-generation-prompt')
+    def get_generation_prompt(backend: Literal['deepeval', 'ragas', 'ragas_native'] = 'deepeval',
+                              prompt: str = Query('', max_length=20000),
+                              include_expected_output: bool = True,
+                              method: Literal['contexts', 'goldens', 'scratch'] = 'contexts'):
+        """Preview the exact system message a generator will send to its LLM."""
+        return {'system_prompt': generation_system_prompt(
+            backend, prompt or settings()['prompt'],
+            include_expected_output=include_expected_output, method=method)}
+
     @router.put('/dataset-settings')
     def save_settings(payload: DatasetSettings):
         selection = payload.default_llm.model_dump() if payload.default_llm else None
@@ -153,6 +178,9 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
             updates['evaluation_max_output_tokens'] = payload.evaluation_max_output_tokens
         if 'default_llm' in payload.model_fields_set:
             updates['dataset_default_llm'] = selection
+        for field, key in [('generation_thinking_mode', 'dataset_generation_thinking_mode'), ('critic_thinking_mode', 'dataset_critic_thinking_mode'), ('judge_thinking_mode', 'dataset_judge_thinking_mode')]:
+            if field in payload.model_fields_set:
+                updates[key] = getattr(payload, field)
         if 'default_embedding_model' in payload.model_fields_set:
             embedding = payload.default_embedding_model.model_dump() if payload.default_embedding_model else None
             if embedding:
@@ -201,6 +229,23 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         result['items'] = [{**item, 'latest_evaluation': summaries.get(item['id']), 'data_sources': sources.get(item['id'], [])} for item in result['items']]
         return result
 
+    @router.post('/datasets/bulk')
+    def bulk_datasets(payload: DatasetBulk):
+        result = {'succeeded': [], 'skipped': [], 'failed': []}
+        for identifier in payload.ids:
+            try:
+                dataset = repo().get(identifier)
+                if dataset.get('status') == 'generating':
+                    result['skipped'].append(identifier)
+                    continue
+                repo().delete(identifier)
+                result['succeeded'].append(identifier)
+            except HTTPException as error:
+                result['failed'].append({'id': identifier, 'message': str(error.detail)})
+            except Exception as error:
+                result['failed'].append({'id': identifier, 'message': str(error)})
+        return result
+
     @router.post('/datasets', status_code=201)
     def create_dataset(payload: DatasetInfo):
         if payload.evaluation_purpose == 'retrieval':
@@ -228,7 +273,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
 
     @router.post('/datasets/generate', status_code=202)
     async def generate_dataset(background_tasks: BackgroundTasks, name: str = Form(..., min_length=1, max_length=120),
-                               description: str = Form('', max_length=2000), options: str = Form(..., max_length=10000),
+                               description: str = Form('', max_length=2000), options: str = Form(..., max_length=60000),
                                files: list[UploadFile] = File(default=[]), evaluation_purpose: Literal['rag', 'retrieval', 'both'] = Form('both')):
         try:
             info = DatasetInfo(name=name, description=description, evaluation_purpose=evaluation_purpose)
@@ -240,7 +285,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         defaults = settings()
         selection, config, key = resolve_llm(opts.llm.model_dump() if opts.llm else defaults['default_llm'])
         critic = (opts.critic_llm.model_dump() if opts.critic_llm else defaults['default_critic_llm']) if opts.generation_backend == 'deepeval' else None
-        critic_selection, critic_config, critic_key = resolve_llm(critic) if critic else (None, None, None)
+        critic_selection, critic_config, critic_key = resolve_llm(critic, 'critic') if critic else (None, None, None)
         if opts.dify_config_id and files:
             raise HTTPException(400, '请选择文档或 Dify 其中一种数据源')
         if info.evaluation_purpose == 'retrieval' and (not opts.dify_config_id or opts.method != 'contexts' or files):
@@ -300,13 +345,32 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         except Exception:
             target.mutate(dataset['id'], lambda c, d: d.update(status='failed', error='资料保存失败，请重新构建。'), generating=True)
             raise
-        background_tasks.add_task(build_dataset, target, dataset['id'], chunks, dify, config, key, dataset['prompt'],
-                                  generation_options, (critic_config, critic_key) if critic_selection else None, embedding, build_token=dataset['build_token'])
+        dispatch(background_tasks, 'dataset_build', {'dataset_id': dataset['id'], 'build_token': dataset['build_token'], 'kind': 'dataset_build'},
+                 build_dataset, target, dataset['id'], chunks, dify, config, key, dataset['prompt'],
+                 generation_options, (critic_config, critic_key) if critic_selection else None, embedding, build_token=dataset['build_token'])
         return dataset
 
     @router.get('/datasets/{identifier}')
     def get_dataset(identifier: str):
-        return repo().get(identifier)
+        target = repo()
+        dataset = target.get(identifier)
+        # Quality checks are read-only and intentionally skipped while a build
+        # is running; the report is refreshed on the next dataset read.
+        if dataset.get('status') != 'generating':
+            samples = target.items(identifier, page=1, size=20000)['items']
+            report = quality_report(samples, target.sources(identifier))
+            dataset['quality_report'] = report
+        values = dataset.get('generation_config') or dataset.get('generation_options') or {}
+        backend = values.get('generation_backend', 'deepeval')
+        prompt = values.get('prompt') or dataset.get('prompt') or settings()['prompt']
+        if prompt == LEGACY_DEFAULT_PROMPT:
+            prompt = DEFAULT_PROMPT
+        override = values.get('system_prompt_override')
+        dataset['generation_system_prompt'] = override or generation_system_prompt(
+            backend, prompt,
+            include_expected_output=values.get('include_expected_output', dataset.get('evaluation_purpose') != 'retrieval'),
+            method=values.get('method', 'contexts'))
+        return dataset
 
     @router.put('/datasets/{identifier}')
     def update_dataset(identifier: str, payload: DatasetInfo):
@@ -316,6 +380,11 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                 raise HTTPException(400, '检索评测数据集必须绑定 Dify 知识库')
             dataset.update(**values)
         return repo().mutate(identifier, save)
+
+    @router.put('/datasets/{identifier}/evaluation-config')
+    def configure_evaluation(identifier: str, payload: DatasetEvaluationConfig):
+        config = payload.model_dump(mode='json')
+        return repo().mutate(identifier, lambda connection, dataset: dataset.update(evaluation_config=config))
 
     @router.put('/datasets/{identifier}/generation-config')
     def configure_generation(identifier: str, payload: DatasetGenerationConfig):
@@ -445,7 +514,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
             options['seed_dataset_id'] = identifier
         selection, config, key = resolve_llm(options['llm'] or defaults['default_llm'])
         critic_selection = (options['critic_llm'] or defaults['default_critic_llm']) if options['generation_backend'] == 'deepeval' else None
-        critic_selection, critic_config, critic_key = resolve_llm(critic_selection) if critic_selection else (None, None, None)
+        critic_selection, critic_config, critic_key = resolve_llm(critic_selection, 'critic') if critic_selection else (None, None, None)
         options.update(llm=selection, critic_llm=critic_selection, max_concurrent=defaults['max_concurrent'])
         embedding = embedding_access(options)
         prompt = config_values.prompt or defaults['prompt']
@@ -475,6 +544,8 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
             baseline = sum(not target.is_generated(json.loads(row['payload']), dataset) for row in rows) if mode == 'replace_generated' else len(rows)
             if baseline + options['size'] > 20000:
                 raise HTTPException(400, '生成后将超过 20000 条数据，请调整数量')
+            if mode == 'replace_generated':
+                target.remove_generated_items(connection, identifier, dataset)
             dataset.update(build_state())
             dataset.update(generation_models={'embedding':model_evidence(embedding[0],options['embedding_model'],'embedding') if embedding else None,
                            'generator': model_evidence(config, selection, 'llm'),
@@ -488,8 +559,9 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         def locked_start(connection, dataset):
             selected_chunks.extend(start(connection, dataset))
         dataset = target.mutate(identifier, locked_start)
-        background_tasks.add_task(build_dataset, target, identifier, selected_chunks, None, config, key, prompt,
-                                  options, (critic_config, critic_key) if critic_selection else None, embedding, build_token=dataset['build_token'])
+        dispatch(background_tasks, 'dataset_build', {'dataset_id': identifier, 'build_token': dataset['build_token'], 'kind': 'dataset_build'},
+                 build_dataset, target, identifier, selected_chunks, None, config, key, prompt,
+                 options, (critic_config, critic_key) if critic_selection else None, embedding, build_token=dataset['build_token'])
         return dataset
 
     @router.post('/datasets/{identifier}/regenerate-answers', status_code=202)
@@ -527,8 +599,10 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                            build_answer_total=len(ids), build_stage='generating',
                            generation_models={'generator': model_evidence(config, selection, 'llm')})
         dataset = target.mutate(identifier, start)
-        background_tasks.add_task(regenerate_answers, target, identifier, ids, config, key, prompt,
-                                  options, dataset['build_token'])
+        dispatch(background_tasks, 'dataset_answers', {'dataset_id': identifier, 'item_ids': ids,
+                                                       'build_token': dataset['build_token'], 'kind': 'dataset_answers'},
+                 regenerate_answers, target, identifier, ids, config, key, prompt,
+                 options, dataset['build_token'])
         return dataset
 
     @router.delete('/datasets/{identifier}', status_code=204)
@@ -576,8 +650,10 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                          build_answer_pending_ids=pending,
                          generation_models={'generator': model_evidence(config, selection, 'llm')})
             dataset = target.mutate(identifier, start_answers)
-            background_tasks.add_task(regenerate_answers, target, identifier, pending, config, key,
-                                      prompt, options, dataset['build_token'])
+            dispatch(background_tasks, 'dataset_answers', {'dataset_id': identifier, 'item_ids': pending,
+                                                           'build_token': dataset['build_token'], 'kind': 'dataset_answers'},
+                     regenerate_answers, target, identifier, pending, config, key,
+                     prompt, options, dataset['build_token'])
             return dataset
         selection, config, key = resolve_llm(dataset.get('llm') or settings()['default_llm'])
         opts = {**dataset.get('generation_options', {}), 'max_concurrent': settings()['max_concurrent']}
@@ -593,18 +669,37 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         def start(c, d):
             if d['status'] not in {'failed', 'cancelled'}:
                 raise HTTPException(409, '数据集正在构建')
+            cursor = d.get('build_chunk_cursor', 0)
             d.update(build_state())
+            d['build_chunk_cursor'] = cursor
             d.update(status='generating', error=None, llm=selection, generation_options=opts)
         dataset = target.mutate(identifier, start)
         prompt = dataset.get('prompt') or settings()['prompt']
         if prompt == LEGACY_DEFAULT_PROMPT:
             prompt = DEFAULT_PROMPT
-        background_tasks.add_task(build_dataset, target, identifier, chunks, dify, config, key, prompt, opts, critic, embedding, build_token=dataset['build_token'])
+        dispatch(background_tasks, 'dataset_build', {'dataset_id': identifier, 'build_token': dataset['build_token'], 'kind': 'dataset_build'},
+                 build_dataset, target, identifier, chunks, dify, config, key, prompt, opts, critic, embedding, build_token=dataset['build_token'])
         return dataset
 
     @router.get('/datasets/{identifier}/items')
-    def list_items(identifier: str, page: int = Query(1, ge=1, le=1000000000), page_size: int = Query(20, ge=1, le=100), q: str = Query('', max_length=200)):
-        return repo().items(identifier, page, page_size, q)
+    def list_items(identifier: str, page: int = Query(1, ge=1, le=1000000000), page_size: int = Query(20, ge=1, le=100), q: str = Query('', max_length=200), quality: Literal['all', 'issues', 'omission'] = Query('all')):
+        target = repo()
+        if quality == 'all':
+            return target.items(identifier, page, page_size, q)
+        # Quality status is derived from the immutable dataset/source snapshot,
+        # so filter the same complete sample set used by the quality banner
+        # before applying pagination. This keeps row badges and filter counts
+        # on the same population.
+        all_items = target.items(identifier, page=1, size=20000)['items']
+        report = quality_report(all_items, target.sources(identifier))
+        omission_ids = {str(item.get('sample_id')) for item in report['annotation_warnings'] if item.get('sample_id')}
+        selected_ids = omission_ids
+        query = q.casefold().strip()
+        filtered = [item for item in all_items if item.get('id') in selected_ids and (not query or query in json.dumps(item, ensure_ascii=False).casefold())]
+        total = len(filtered)
+        current_page = min(page, max(1, (total + page_size - 1) // page_size))
+        start = (current_page - 1) * page_size
+        return {'items': filtered[start:start + page_size], 'total': total, 'page': current_page, 'page_size': page_size}
 
     @router.get('/datasets/{identifier}/items/{item_id}/generation')
     def item_generation(identifier: str, item_id: str):

@@ -321,7 +321,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_permanent_errors_no_retry_transient_bounded_and_cancel_stops(self):
         import requests
-        self.request['metrics']=[{'id':'rules.required_text','required_text':['answer']}]
+        self.request['metrics']=[{'id':'rules.mrr'}]
         self.request['scoring_engine']='rules'
         self.request['budget'].update(max_retries=2)
         error=requests.HTTPError(response=unittest.mock.MagicMock(status_code=401))
@@ -341,7 +341,7 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.evaluations.get(prepared['id'])['status'],'cancelled')
 
     def test_resume_completed_target_after_worker_death_and_no_duplicate_commit(self):
-        self.request['scoring_engine']='rules';self.request['metrics']=[{'id':'rules.required_text','required_text':['answer']}]
+        self.request['scoring_engine']='rules';self.request['metrics']=[{'id':'rules.mrr'}]
         prepared=self.prepare();self.evaluations.enqueue(prepared['id']);old=self.evaluations.claim('dead')
         self.evaluations.record_target(prepared['id'],prepared['cases'][0]['id'],old['worker_token'],observation={'actual_output':'answer','duration_ms':5})
         with self.store._session() as c:

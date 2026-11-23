@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from backend.bulk import PlanBulk, RunBulk
+from backend.bulk import PlanBulk, RunBulk, RunPlanGroupBulk, ServiceConfigBulk
 from backend.connectivity import ConnectivityError, check_models
 from backend.evaluation_routes import install_evaluation_routes
 from backend.dataset_routes import install_dataset_routes
@@ -30,6 +30,7 @@ from backend.runner import BenchmarkRunner
 from backend.schemas import ActivationUpdate, ModelActivationUpdate, AiReportRequest, BenchmarkKind, SystemSettingsUpdate, DifyNamesRequest, PlaygroundRequest, ProviderAccess, ProviderSelection, RunCreate, ServiceConfigCreate, TestPlanCreate
 from backend.secrets import SecretBox
 from backend.store import DEFAULT_DATABASE_URL, RunStore, TERMINAL_STATUSES, utc_now
+from backend.task_queue import TaskQueue, durable_tasks_enabled
 from backend.tenant_context import WorkspaceProxy, can_manage_workspace, workspace_context
 from backend.workspaces import WorkspaceManager
 from backend.validation import is_placeholder_url
@@ -40,7 +41,8 @@ DATA_DIR = Path(os.getenv("BENCHMARK_DATA_DIR", PROJECT_ROOT / "backend" / "volu
 root_store = RunStore(os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL), initialize=False)
 secret_box = SecretBox.from_data_dir(DATA_DIR)
 auth = AuthService.from_env(root_store, DATA_DIR)
-workspaces = WorkspaceManager(root_store, PROJECT_ROOT, DATA_DIR, secret_box, enabled=auth.config.enabled)
+workspaces = WorkspaceManager(root_store, PROJECT_ROOT, DATA_DIR, secret_box, enabled=auth.config.enabled,
+                              durable_tasks=durable_tasks_enabled())
 store = WorkspaceProxy(workspaces, "store")
 runner = WorkspaceProxy(workspaces, "runner")
 auth.workspaces = workspaces
@@ -444,6 +446,29 @@ def delete_service_config(config_id: str) -> None:
     store.delete_service_config(config_id)
 
 
+@app.post("/api/service-configs/bulk")
+def bulk_service_configs(payload: ServiceConfigBulk) -> dict:
+    result = {"succeeded": [], "skipped": [], "failed": []}
+    for config_id in payload.ids:
+        try:
+            config = store.get_service_config(config_id)
+            if not config:
+                raise HTTPException(404, "Model provider not found")
+            if config.get("provider") != "dify":
+                result["skipped"].append(config_id)
+                continue
+            if store.has_active_run_for_config(config_id):
+                result["skipped"].append(config_id)
+                continue
+            store.delete_service_config(config_id)
+            result["succeeded"].append(config_id)
+        except HTTPException as error:
+            result["failed"].append({"id": config_id, "message": str(error.detail)})
+        except Exception as error:
+            result["failed"].append({"id": config_id, "message": str(error)})
+    return result
+
+
 @app.get("/api/plans")
 def list_plans(
     limit: int = Query(default=100, ge=1, le=500),
@@ -761,6 +786,81 @@ async def _evaluation_scheduler(concurrency=2):
             job.cancel()
 
 
+async def _background_scheduler(concurrency=2):
+    """Run durable non-evaluation jobs from every workspace schema."""
+    from backend.task_handlers import run_ai_report_job, run_dataset_job
+
+    owner = uuid.uuid4().hex
+    jobs = set()
+    kinds = {"benchmark", "dataset_build", "dataset_answers", "ai_report"}
+
+    async def execute(runtime, access, queue, claim):
+        context_token = workspace_context.set((runtime, access))
+        heartbeat = asyncio.create_task(_background_heartbeat(queue, claim, owner))
+        try:
+            if claim["kind"] == "benchmark":
+                await runtime.runner.execute_queued(claim["payload"]["run_id"])
+            elif claim["kind"] in {"dataset_build", "dataset_answers"}:
+                await asyncio.to_thread(run_dataset_job, claim["payload"])
+            elif claim["kind"] == "ai_report":
+                await asyncio.to_thread(run_ai_report_job, claim["payload"])
+            await asyncio.to_thread(queue.complete, claim["id"], owner)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logging.exception("Background job %s failed", claim.get("id"))
+            try:
+                await asyncio.to_thread(queue.fail, claim["id"], owner, "worker_failed")
+            except Exception:
+                logging.exception("Could not settle background job %s", claim.get("id"))
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            workspace_context.reset(context_token)
+
+    try:
+        while True:
+            for job in list(jobs):
+                if job.done():
+                    jobs.remove(job)
+                    if not job.cancelled() and job.exception():
+                        logging.error("Background worker task stopped: %s", job.exception())
+            if len(jobs) < concurrency:
+                try:
+                    available = await asyncio.to_thread(workspaces.scheduled_workspaces)
+                except Exception:
+                    logging.exception("Background job queue unavailable; retrying")
+                    await asyncio.sleep(5)
+                    continue
+                for runtime, access in available:
+                    if len(jobs) >= concurrency:
+                        break
+                    queue = runtime.task_queue or TaskQueue(runtime.store)
+                    try:
+                        claim = await asyncio.to_thread(queue.claim, owner, kinds)
+                    except Exception:
+                        logging.exception("Background job claim failed")
+                        continue
+                    if claim:
+                        jobs.add(asyncio.create_task(execute(runtime, access, queue, claim)))
+            await asyncio.sleep(1)
+    finally:
+        for job in jobs:
+            job.cancel()
+
+
+async def _background_heartbeat(queue, claim, owner):
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await asyncio.to_thread(queue.heartbeat, claim["id"], owner)
+        except Exception:
+            return
+
+
 @app.get("/api/system-settings")
 def system_settings() -> dict:
     return store.system_settings()
@@ -815,14 +915,20 @@ def create_ai_report(run_id: str, payload: AiReportRequest, background_tasks: Ba
                                     model=selection.get("model"), credential_id=selection.get("credential_id"), query="analyse"))
     generation_id = uuid.uuid4().hex
     try:
-        report = store.begin_ai_report(run_id, generation_id, {"provider": config["name"], "model": selection["model"]})
+        report = store.begin_ai_report(run_id, generation_id, {"provider": config["name"], "model": selection["model"], "selection": selection, "language": payload.language})
     except ValueError as exc:
         raise HTTPException(404, "Run not found") from exc
     if report is None:
         raise HTTPException(409, "此运行记录正在分析，请勿重复提交。")
     access = workspace_context.get()
     report_store = access[0].store if access else store
-    background_tasks.add_task(_generate_ai_report, report_store, run, generation_id, config, key, payload.language)
+    if durable_tasks_enabled():
+        TaskQueue(report_store).enqueue("ai_report", {
+            "run_id": run_id, "generation_id": generation_id,
+            "selection": selection, "language": payload.language,
+        }, job_id=f"ai_report:{run_id}:{generation_id}")
+    else:
+        background_tasks.add_task(_generate_ai_report, report_store, run, generation_id, config, key, payload.language)
     return report
 
 
@@ -904,8 +1010,38 @@ def list_run_plan_groups(page: int = Query(1, ge=1, le=1000000000),
                          page_size: int = Query(10, ge=1, le=100),
                          q: str = Query('', max_length=200),
                          status: Literal["queued", "running", "completed", "failed", "cancelled"] | None = None,
-                         benchmark: BenchmarkKind | None = None):
-    return store.run_plan_groups_page(page, page_size, q=q, status=status, benchmark=benchmark)
+                         benchmark: BenchmarkKind | None = None,
+                         compact: bool = Query(default=False)):
+    result = store.run_plan_groups_page(page, page_size, q=q, status=status, benchmark=benchmark)
+    if compact:
+        result['items'] = [{**item, 'latest_run': _dashboard_run(item['latest_run'])} for item in result['items']]
+    return result
+
+
+def _dashboard_run(value: dict) -> dict:
+    """Return the metrics needed by the dashboard without per-request samples."""
+    result = {
+        key: value.get(key)
+        for key in ('id', 'plan_id', 'name', 'benchmark', 'status', 'created_at', 'updated_at',
+                    'started_at', 'completed_scenarios', 'total_scenarios', 'concurrency_levels',
+                    'requests_per_scenario', 'error')
+    }
+    scenarios = []
+    for scenario in value.get('scenarios') or []:
+        compact = {key: scenario.get(key) for key in (
+            'id', 'provider', 'provider_name', 'model', 'concurrency', 'status',
+            'completed_requests', 'total_requests', 'started_at', 'error')}
+        scenario_result = scenario.get('result')
+        if isinstance(scenario_result, dict):
+            compact['result'] = {
+                key: scenario_result.get(key)
+                for key in ('success_rate', 'qps_success', 'success_count', 'failure_count', 'metrics')
+            }
+        else:
+            compact['result'] = None
+        scenarios.append(compact)
+    result['scenarios'] = scenarios
+    return result
 
 
 @app.get("/api/runs")
@@ -917,12 +1053,16 @@ def list_runs(
     status: Literal["queued", "running", "completed", "failed", "cancelled"] | None = None,
     benchmark: BenchmarkKind | None = None,
     plan_id: str | None = Query(default=None, min_length=1, max_length=128),
+    compact: bool = Query(default=False),
 ) -> list[dict] | dict:
     if page is not None or q or status or benchmark or plan_id is not None:
         result = store.runs_page(page or 1, page_size if page is not None else limit,
                                  q=q, status=status, benchmark=benchmark, plan_id=plan_id)
+        if compact:
+            result['items'] = [_dashboard_run(item) for item in result['items']]
         return result if page is not None else result["items"]
-    return store.list(limit)
+    result = store.list(limit)
+    return [_dashboard_run(item) for item in result] if compact else result
 
 
 @app.get("/api/runs/selection")
@@ -1013,6 +1153,31 @@ async def bulk_plans(payload: PlanBulk):
 @app.post("/api/runs/bulk")
 async def bulk_runs(payload: RunBulk):
     return await _bulk_records(payload, False)
+
+
+@app.post("/api/run-plan-groups/bulk")
+async def bulk_run_plan_groups(payload: RunPlanGroupBulk):
+    if not can_manage_workspace():
+        raise HTTPException(403, "Workspace configuration requires an owner or administrator")
+    result = {'succeeded': [], 'skipped': [], 'failed': []}
+    for group_id in payload.ids:
+        try:
+            runs = await run_in_threadpool(store.runs_for_plan_group, group_id)
+            if not runs:
+                raise HTTPException(404, "Record not found")
+            terminal_runs = [run for run in runs if run.get('status') in TERMINAL_STATUSES]
+            if not terminal_runs:
+                result['skipped'].append(group_id)
+                continue
+            for run in terminal_runs:
+                await run_in_threadpool(delete_run, run['id'])
+            result['succeeded'].append(group_id)
+        except HTTPException as error:
+            result['failed'].append({'id': group_id, 'message': str(error.detail)})
+        except Exception:
+            logging.getLogger(__name__).exception("Batch delete failed for run plan group %s", group_id)
+            result['failed'].append({'id': group_id, 'message': '操作失败，请刷新列表后重试'})
+    return result
 
 
 @app.get("/api/runs/{run_id}/events")

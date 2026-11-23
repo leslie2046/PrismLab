@@ -11,7 +11,11 @@ def generation_parameters(config, key, max_tokens=8192):
     """
     specs = describe_parameters(config, key)['parameters']
     thinking = specs.get('thinking_mode', {})
-    overrides = {'thinking_mode': 'disabled'} if 'disabled' in thinking.get('values', []) else {}
+    configured_mode = config.get('thinking_mode', 'auto')
+    if configured_mode in {'enabled', 'disabled'} and configured_mode in thinking.get('values', []):
+        overrides = {'thinking_mode': configured_mode}
+    else:
+        overrides = {'thinking_mode': 'disabled'} if 'disabled' in thinking.get('values', []) else {}
     limit = min(max_tokens, int(specs['max_tokens']['max']))
     wire, _ = resolve_parameters(config, overrides, max_tokens=limit, key=key)
     return wire

@@ -39,7 +39,7 @@ profiles:
   qwen_template:
     source: https://docs.vllm.ai/en/latest/features/reasoning_outputs/
     parameters:
-      thinking_mode: {type: enum, label: 思考模式, description: 要求部署使用支持 enable_thinking 的 Qwen3 聊天模板；不代表所有本地模型都支持。, values: [enabled, disabled], api_field: chat_template_kwargs.enable_thinking, wire_values: {enabled: true, disabled: false}}
+      thinking_mode: {type: enum, label: 思考模式, description: 要求部署使用支持 enable_thinking 的 Qwen3 聊天模板；不代表所有本地模型都支持。, values: [enabled, disabled], default: enabled, api_field: chat_template_kwargs.enable_thinking, wire_values: {enabled: true, disabled: false}}
   aliyun_thinking:
     source: https://help.aliyun.com/zh/model-studio/deep-thinking
     parameters:
@@ -53,7 +53,7 @@ models:
   - {provider: deepseek, patterns: [deepseek-flash, deepseek-v4-pro, deepseek-v4-flash], profile: deepseek}
   - {provider: siliconflow, patterns: ['Qwen/Qwen3.5-27B', 'Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen/Qwen3-30B-A3B', 'Qwen/Qwen3-235B-A22B', 'Pro/Qwen/Qwen3-8B', 'Pro/Qwen/Qwen3-14B', 'Pro/Qwen/Qwen3-32B', 'Pro/deepseek-ai/DeepSeek-V3.2', 'deepseek-ai/DeepSeek-V3.2'], profile: siliconflow_thinking}
   - {provider: siliconflow, patterns: ['Pro/deepseek-ai/DeepSeek-V4', 'deepseek-ai/DeepSeek-V4-Flash', 'Pro/zai-org/GLM-5.2'], profile: siliconflow_effort}
-  - {provider: vllm, patterns: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'], profile: qwen_template}
+  - {provider: vllm, patterns: ['Qwen/Qwen3-8B', 'Qwen/Qwen3-14B', 'Qwen/Qwen3-32B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B', 'qwen3.8-27b-fp8', 'Qwen3.8-27B-FP8', 'Qwen/Qwen3.8-27B-FP8'], profile: qwen_template}
   - {provider: aliyun, patterns: [qwen3-8b, qwen3-14b, qwen3-32b, qwen3-30b-a3b, qwen3-235b-a22b], profile: aliyun_thinking}
   - {provider: qwen, patterns: [qwen3-8b, qwen3-14b, qwen3-32b, qwen3-30b-a3b, qwen3-235b-a22b], profile: aliyun_thinking}
   - {provider: xinference, patterns: [Qwen3-8B, Qwen3-14B, Qwen3-32B], profile: xinference_hybrid}

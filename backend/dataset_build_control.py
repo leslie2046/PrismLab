@@ -16,7 +16,7 @@ def build_state():
                 build_stage='sources', build_attempt=0, build_retry_count=0,
                 build_retry_limit=RETRY_LIMIT, build_last_error=None,
                 build_requests=0, build_output_tokens=0, build_active_requests=0,
-                build_request_started_at=None)
+                build_request_started_at=None, build_chunk_cursor=0)
 
 
 class RequestLimitExceeded(Exception):
@@ -29,7 +29,7 @@ class BuildRepository:
 
     def __getattr__(self, name):
         method = getattr(self.repo, name)
-        if name in {'mutate', 'add', 'replace_generated', 'save_sources', 'update_answer'}:
+        if name in {'mutate', 'add', 'clear_generated', 'replace_generated', 'save_sources', 'update_answer'}:
             return lambda *args, **kwargs: method(*args, **kwargs, build_token=self.token)
         return method
 

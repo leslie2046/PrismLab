@@ -9,8 +9,8 @@ export function ListToolbar({ language, search, onSearch, searchLabel, filters, 
   const t = (value: string) => tr(language, value);
   const active = Boolean(search || filters.some(filter => filter.value));
   return <div className="list-toolbar" role="group" aria-label={t("搜索和筛选")}>
+    {filters.map(filter => <label className="list-filter" key={filter.label}><select aria-label={filter.label} value={filter.value} onChange={event => filter.onChange(event.target.value)}><option value="">{t("全部")}{filter.label}</option>{filter.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>)}
     <label className="list-search"><Search aria-hidden="true" /><input type="search" maxLength={200} value={search} onChange={event => onSearch(event.target.value)} aria-label={searchLabel} placeholder={searchLabel} /></label>
-    {filters.map(filter => <label className="list-filter" key={filter.label}><span>{filter.label}</span><select aria-label={filter.label} value={filter.value} onChange={event => filter.onChange(event.target.value)}><option value="">{t("全部")}</option>{filter.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>)}
     {active && <button type="button" className="ghost" onClick={onReset}>{t("清除筛选")}</button>}
   </div>;
 }

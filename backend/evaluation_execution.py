@@ -115,9 +115,6 @@ def call_target(sample, target, config, key, tracker, conversation_id=""):
             root += '/v1'
         if benchmark == 'dify-retrieve':
             endpoint = root+'/datasets/'+quote(config['dataset_id'], safe='')+'/retrieve'
-            # Let Dify apply the knowledge base's current retrieval settings.
-            # Evaluation-specific top-k/threshold controls are applied only to
-            # the merged results in evaluation_retrieval.py, never sent here.
             payload = {'query': sample['input']}
         else:
             endpoint = root+'/chat-messages'
@@ -233,20 +230,15 @@ def score_metric(metric, sample, observation, judge, config, key, tracker):
 def score_rule(metric, sample, observation):
     annotations = sample.get('annotations', {})
     actual = observation.get('actual_output') or ''
-    if metric['id'] == 'rules.required_text':
-        missing = [text for text in metric['required_text'] if text.casefold() not in actual.casefold()]
-        return (0.0 if missing else 1.0), 'Missing required phrases: '+json.dumps(missing, ensure_ascii=False)
-    if metric['id'] == 'rules.json_schema':
-        import jsonschema
-        try:
-            jsonschema.Draft202012Validator(metric['json_schema']).validate(json.loads(actual))
-            return 1.0, 'Valid JSON matching the configured schema'
-        except (ValueError,jsonschema.ValidationError):
-            return 0.0, 'Answer is not JSON matching the configured schema'
     retrieved = list(dict.fromkeys(observation.get('retrieved_chunk_ids') or []))[:metric['k']]
     relevant = set(annotations.get('relevant_chunk_ids', []))
     if metric['id'] == 'rules.recall_at_k':
         return len(relevant.intersection(retrieved))/len(relevant), f"Recall@{metric['k']}: {len(relevant.intersection(retrieved))}/{len(relevant)} annotated relevant chunks retrieved (returned {len(observation.get('retrieved_chunk_ids') or [])} chunks)"
+    if metric['id'] == 'rules.precision_at_k':
+        hits = len(relevant.intersection(retrieved))
+        denominator = len(retrieved)
+        score = hits / denominator if denominator else 0.0
+        return score, f"Precision@{metric['k']}: {hits}/{denominator} retrieved chunks are annotated relevant"
     if metric['id'] == 'rules.mrr':
         rank = next((i+1 for i,v in enumerate(retrieved) if v in relevant), None)
         return (1/rank if rank else 0.0), f'First relevant rank: {rank}'

@@ -9,7 +9,7 @@
 | 类型 | 被测对象 | 默认评分 | 数据要求 |
 | --- | --- | --- | --- |
 | RAG 评测 | LLM、Dify Chat | DeepEval 回答相关性与参考答案正确性，或 RAGAS 事实正确性 | 问题；所选指标需要时提供参考答案或应用实际召回 |
-| 检索评测 | Dify 知识库 | DeepEval / RAGAS 上下文精确率与召回率；规则引擎使用 Recall@K、MRR、nDCG | 问题与参考答案（模型评分）；相关片段 ID / 分级相关性（排序规则），以及实际检索结果 |
+| 检索评测 | Dify 知识库 | DeepEval / RAGAS 上下文精确率与召回率；规则引擎使用 Precision@K、Recall@K、MRR、nDCG | 问题与参考答案（模型评分）；相关片段 ID / 分级相关性（排序规则），以及实际检索结果 |
 
 检索评测只允许无需实际回答的指标，不提供答案生成或多轮设置。Dify 检索数量与排序指标 K 使用同一设置。规则指标无需评审模型；上下文评分需要独立评审模型。片段 ID 必须与检索服务实际返回的 ID 对齐。缺少标注或实际召回显示不可计算，空召回沿用原有评分规则。
 
@@ -64,7 +64,7 @@ API：`DELETE /api/evaluation-runs/{run_id}`，成功返回 `{"deleted": true}`�
 | DeepEval 检索 | Contextual Precision / Recall | 问题、参考答案、实际召回 |
 | RAGAS | Faithfulness、Context Recall、Context Precision 有/无参考变体、Factual Correctness | 每种变体在界面中声明依赖 |
 | 排序规则 | Recall@K、MRR、nDCG | 人工标注相关片段稳定 ID / 0–3 相关性等级，以及实际返回 ID 顺序 |
-| 业务规则 | 自定义 GEval rubric/示例、必需短语、JSON Schema | 规则随运行冻结 |
+| 业务规则 | 自定义 GEval rubric/示例 | 规则随运行冻结 |
 
 空召回在 ID 排序指标中为 0；未返回片段 ID 为缺数据。空实际召回无法为忠实度提供依据，显示缺数据。nDCG 理想增益为 0 时约定得分 0。
 
@@ -88,12 +88,19 @@ API：`DELETE /api/evaluation-runs/{run_id}`，成功返回 `{"deleted": true}`�
 
 ## 持久队列与独立 worker
 
-评测任务在 PostgreSQL 中排队，默认 API 内运行 2 个任务。每个运行由单一 worker 顺序处理样本；通过多个进程并行处理不同运行。`FOR UPDATE SKIP LOCKED` 领取、60 秒租约、10 秒续租、令牌 fencing、原子预算限制保证竞争与恢复。
+评测任务在 PostgreSQL 中排队，默认评测 worker 并发运行 2 个任务。每个运行由单一 worker 顺序处理样本；通过多个进程并行处理不同运行。`FOR UPDATE SKIP LOCKED` 领取、60 秒租约、10 秒续租、令牌 fencing、原子预算限制保证竞争与恢复。
+
+Docker Compose 默认将评测执行放在独立的 `evaluation-worker` 容器中，并通过 `EVALUATION_EMBEDDED_WORKER=false` 关闭 API 内置 worker。该容器与 API 共用后端镜像、PostgreSQL、`BENCHMARK_DATA_DIR` 和加密密钥；API 负责数据库初始化。可通过 `EVALUATION_WORKER_CONCURRENCY` 或多个 worker 容器调整评测吞吐量。
+
+性能测试、数据集构建和 AI 报告使用同一套 PostgreSQL 持久任务表，由 Compose 的 `worker` 容器执行。任务包含工作区、业务记录 ID 和构建令牌，worker 领取后每 60 秒续租；API 重启不会把这些任务直接标记为失败，worker 崩溃后租约到期会重新领取。计划调度仍由单 API 进程负责，并只负责把运行任务写入队列。
 
 ```bash
-# API 容器：设 EVALUATION_EMBEDDED_WORKER=false 后启动原来的单 API worker。
+# API 容器：Compose 已默认设为 EVALUATION_EMBEDDED_WORKER=false。
 # 独立评测 worker：使用与 API 相同的 DATABASE_URL、认证配置和持久卷加密密钥。
 python -m cli.evaluation_worker --concurrency 4
+
+# 通用后台 worker：执行性能测试、数据集构建和 AI 报告。
+python -m cli.worker --concurrency 4
 ```
 
 API 负责迁移数据库。独立评测 worker 不执行性能任务恢复或数据库迁移，启动不会将 API 正在运行的性能测试、构建或报告标为失败。不要增加 API 的 uvicorn workers；原性能调度仍由单 API 进程拥有。

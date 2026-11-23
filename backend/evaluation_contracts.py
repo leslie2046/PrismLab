@@ -56,22 +56,20 @@ METRICS = {
         'required_fields': ['expected_output', 'actual_output']},
     'rules.recall_at_k': {'engine': 'rules', 'implementation': 'prismlab.ranking.recall-v1',
         'required_fields': ['relevant_chunk_ids', 'retrieved_chunk_ids'], 'empty_retrieval_valid': True},
+    'rules.precision_at_k': {'engine': 'rules', 'implementation': 'prismlab.ranking.precision-v1',
+        'required_fields': ['relevant_chunk_ids', 'retrieved_chunk_ids'], 'empty_retrieval_valid': True},
     'rules.mrr': {'engine': 'rules', 'implementation': 'prismlab.ranking.mrr-v1',
         'required_fields': ['relevant_chunk_ids', 'retrieved_chunk_ids'], 'empty_retrieval_valid': True},
     'rules.ndcg': {'engine': 'rules', 'implementation': 'prismlab.ranking.ndcg-v1',
         'required_fields': ['graded_relevance', 'retrieved_chunk_ids'], 'empty_retrieval_valid': True},
     'deepeval.custom': {'engine': 'deepeval', 'implementation': 'deepeval.metrics.GEval:rubric-v1',
         'required_fields': ['input', 'actual_output']},
-    'rules.required_text': {'engine': 'rules', 'implementation': 'prismlab.required-text-v1',
-        'required_fields': ['actual_output']},
-    'rules.json_schema': {'engine': 'rules', 'implementation': 'jsonschema.Draft202012Validator',
-        'required_fields': ['actual_output']},
 }
 
 RETRIEVAL_METRICS = frozenset({
     'deepeval.context_precision', 'deepeval.context_recall',
     'ragas.context_precision', 'ragas.context_recall',
-    'rules.recall_at_k', 'rules.mrr', 'rules.ndcg',
+    'rules.recall_at_k', 'rules.precision_at_k', 'rules.mrr', 'rules.ndcg',
 })
 
 
@@ -178,7 +176,7 @@ class EvaluationTarget(StrictContract):
     prompt: str = Field(default='', max_length=20000)
     max_tokens: int = Field(default=1024, ge=2, le=8192)
     timeout_seconds: int = Field(default=60, ge=5, le=180)
-    retrieval_top_k: int = Field(default=5, ge=1, le=100)
+    retrieval_top_k: int | None = Field(default=None, ge=1, le=100)
     selections: list[ProviderSelection] = Field(default_factory=list, max_length=20)
     retrieval_reranker: ProviderSelection | None = None
     retrieval_candidate_top_k: int = Field(default=20, ge=1, le=100)
@@ -193,7 +191,10 @@ class EvaluationTarget(StrictContract):
                 raise ValueError('主知识库必须与知识库列表第一项一致')
             if len({s.id for s in self.selections}) != len(self.selections):
                 raise ValueError('不能重复选择同一知识库')
-        if (self.selections or self.retrieval_reranker or self.retrieval_score_threshold is not None) and self.retrieval_candidate_top_k < self.retrieval_top_k:
+        fusion = bool(self.selections or self.retrieval_reranker or self.retrieval_score_threshold is not None)
+        if fusion and self.retrieval_top_k is None:
+            raise ValueError('多路召回必须设置最终 Top K')
+        if fusion and self.retrieval_candidate_top_k < self.retrieval_top_k:
             raise ValueError('每库召回数量不能小于最终 Top K')
         return self
 
@@ -203,8 +204,6 @@ class MetricSelection(StrictContract):
     threshold: float = Field(default=0.5, ge=0, le=1)
     criteria: str = Field(default='', max_length=10000)
     examples: str = Field(default='', max_length=10000)
-    required_text: list[str] = Field(default_factory=list, max_length=50)
-    json_schema: dict | None = None
     k: int = Field(default=5, ge=1, le=100)
 
     @model_validator(mode='after')
@@ -213,16 +212,6 @@ class MetricSelection(StrictContract):
             raise ValueError('Unknown metric')
         if self.id == 'deepeval.custom' and not self.criteria.strip():
             raise ValueError('Custom judge criteria are required')
-        if self.id == 'rules.required_text' and (not self.required_text or any(not t.strip() or len(t)>2000 for t in self.required_text)):
-            raise ValueError('Required text must contain nonempty phrases')
-        if self.id == 'rules.json_schema':
-            import jsonschema
-            if self.json_schema is None:
-                raise ValueError('JSON Schema is required')
-            try:
-                jsonschema.Draft202012Validator.check_schema(self.json_schema)
-            except jsonschema.SchemaError:
-                raise ValueError('Invalid JSON Schema') from None
         return self
 
 

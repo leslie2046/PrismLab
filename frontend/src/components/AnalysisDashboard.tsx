@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts/core";
-import { LineChart } from "echarts/charts";
+import { BarChart, LineChart } from "echarts/charts";
 import { AriaComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption } from "echarts/core";
@@ -13,7 +13,7 @@ import { llmMetricLabel, llmMetricTip } from "../llmMetrics";
 import { PageHeader } from "./PageHeader";
 import { PaginatedList } from "./Pagination";
 
-echarts.use([LineChart, AriaComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([BarChart, LineChart, AriaComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer]);
 type View = "comparison" | "trend" | "stability";
 function themeValue(name: string) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function formatTime(value: string, language: Language) {
@@ -50,7 +50,9 @@ function ResultChart({ runs, metric, concurrency, trend, language, dark }: { run
       grid: { top: 64, right: 20, bottom: 58, left: 16, containLabel: true },
       xAxis: { type: "category", name: tr(language, trend ? "运行时间／序号" : "并发数"), nameTextStyle: { color: muted }, nameLocation: "middle", nameGap: 36, data: trend ? runs.map((run, index) => `#${index + 1} · ${formatTime(run.created_at, language)}`) : levels.map(String), axisLabel: { color: muted, hideOverlap: true }, axisLine: { lineStyle: { color: border } }, axisTick: { show: false } },
       yAxis: { type: "value", min: 0, max: metric === "error" ? 100 : undefined, name: metricUnit(metric), nameTextStyle: { color: muted }, axisLabel: { color: muted }, splitLine: { lineStyle: { color: border } } },
-      series: series.map((item, index) => ({ ...item, type: "line", smooth: trend ? 0.25 : false, smoothMonotone: "x", connectNulls: false, showSymbol: true, symbol: ["circle", "rect", "triangle", "diamond", "roundRect", "pin"][index % 6], symbolSize: 8, lineStyle: { width: 2, type: ["solid", "dashed", "dotted"][Math.floor(index / 6) % 3] } })),
+      series: series.map((item, index) => trend
+        ? { ...item, type: "line", smooth: 0.25, smoothMonotone: "x", connectNulls: false, showSymbol: true, symbol: ["circle", "rect", "triangle", "diamond", "roundRect", "pin"][index % 6], symbolSize: 8, lineStyle: { width: 2, type: ["solid", "dashed", "dotted"][Math.floor(index / 6) % 3] } }
+        : { ...item, type: "bar", barMaxWidth: 36, barGap: "15%", barCategoryGap: "28%" }),
     };
   }, [runs, metric, concurrency, trend, language, dark]);
   useEffect(() => {
@@ -129,6 +131,7 @@ export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, ini
   const failed = planRuns.filter((run) => run.status === "failed").length;
   return <div className="dashboard-page">
     {!embedded && <PageHeader icon={LineChartIcon} title={t('分析看板')} description={t('对比模型在不同负载下的表现，跟踪每次运行的变化。')} actions={<button type="button" className="ghost" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button>} />}
+    <div className="dashboard-scroll">
     {loading && <p className="pagination-feedback" role="status">{t('正在加载完整运行记录…')}</p>}
     {error && <div className="pagination-feedback error-text" role="alert">{t('运行记录加载失败，请重试。')} <span>{error}</span><button type="button" className="ghost" onClick={() => setRevision(value => value + 1)}>{t('重试')}</button></div>}
     {history !== null && <>
@@ -145,7 +148,7 @@ export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, ini
       <article><span>{t("最近运行")}</span><strong className="metric-time">{latest ? formatTime(latest.created_at, language) : "—"}</strong><small>{latest?.benchmark || t("暂无运行记录")}</small></article>
     </section>
     <section className="panel dashboard-chart-panel">
-      <div className="panel-head"><div><h2>{t(view === "comparison" ? "并发性能对比" : view === "trend" ? "历史运行趋势" : "失败率趋势")}</h2><p>{t(trend ? "每条曲线代表一个模型与并发档位，可同时对比全部档位或单独筛选。" : "横轴为并发数，每条曲线代表一个模型；比较不同负载下的性能。")}</p></div></div>
+      <div className="panel-head"><div><h2>{t(view === "comparison" ? "并发性能对比" : view === "trend" ? "历史运行趋势" : "失败率趋势")}</h2><p>{t(trend ? "每条曲线代表一个模型与并发档位，可同时对比全部档位或单独筛选。" : "横轴为并发数，每组柱子代表一个模型；比较不同负载下的性能。")}</p></div></div>
       <div className="dashboard-chart-controls">
         {view !== "stability" && <div className="metric-toggle">{(["p50", "p95", "p99", "qps", ...(isLlm ? ["ttft", "tpot", "tokens_per_second"] : [])] as Metric[]).map((item) => <button key={item} aria-pressed={selectedMetric === item} className={selectedMetric === item ? "active" : ""} onClick={() => setMetric(item)}>{item === "tokens_per_second" ? "tokens/s" : item.toUpperCase()}</button>)}</div>}
         {trend ? <label><span>{t("并发档位")}</span><select value={concurrency ?? "all"} disabled={!levels.length} onChange={(event) => setSelectedLevel(event.target.value === "all" ? null : Number(event.target.value))}><option value="all">{t("全部并发档位")}</option>{levels.map((level) => <option key={level} value={level}>{level}</option>)}</select></label>
@@ -162,5 +165,6 @@ export function AnalysisDashboard({ plans, runs: recentRuns, language, dark, ini
       </details>
     </section>
     </>}
+    </div>
   </div>;
 }

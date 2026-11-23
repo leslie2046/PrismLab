@@ -11,6 +11,7 @@ import {ListToolbar} from './ListToolbar';
 import {Pagination} from './Pagination';
 import {BulkSelectionBar, SelectionCheckbox} from './BulkSelection';
 import {AnalysisDashboard} from './AnalysisDashboard';
+import {useConfirm} from './ConfirmDialog';
 
 const terminal = new Set(['completed','failed','cancelled']);
 const statusNames:Record<string,string> = {queued:'等待中',running:'运行中',completed:'已完成',failed:'失败',cancelled:'已取消'};
@@ -31,6 +32,7 @@ function PlanRecords({group,language,canManage,revision,selectedId,onSelect,onRe
   onSelect:(run:Run)=>void;onReport:(run:Run)=>void;onChanged:()=>void;onDeleted:(ids:string[])=>void;onCount:(count:number)=>void;
 }) {
   const t=(value:string)=>tr(language,value);
+  const confirm=useConfirm();
   const [notice,setNotice]=useState('');
   const [deleting,setDeleting]=useState(false);
   const fetchPage=useCallback(async(page:number,size:number,signal:AbortSignal,filters:ListFilters)=>{
@@ -48,12 +50,12 @@ function PlanRecords({group,language,canManage,revision,selectedId,onSelect,onRe
   const ids=page.items.map(run=>run.id),disabled=page.loading||!!page.error||selection.busy||deleting;
   useEffect(()=>{if(!page.loading&&!page.error)onCount(page.total)},[page.total,page.loading,page.error]);
   function changed(result:BulkResult, action:'delete'|'cancel') {if(action==='delete')onDeleted(result.succeeded);onChanged();}
-  function bulk(action:'delete'|'cancel') {
-    if(!window.confirm(`${t(action==='cancel'?'批量取消运行':'批量删除')} ${selection.ids.size} ${t('条记录')}？ ${t(action==='cancel'?'仅取消排队中或运行中的任务。':'仅删除已结束的运行及其报告，此操作无法撤销。')}`))return;
+  async function bulk(action:'delete'|'cancel') {
+    if(!await confirm({title:t(action==='cancel'?'请确认取消运行吗？':'确认删除吗？'),message:`${t(action==='cancel'?'批量取消运行':'批量删除')} ${selection.ids.size} ${t('条记录')}`,detail:t(action==='cancel'?'仅取消排队中或运行中的任务。':'仅删除已结束的运行及其报告，此操作无法撤销。'),confirmLabel:t(action==='delete'?'确认删除':'确定'),danger:action==='delete'}))return;
     void selection.execute(ids=>api.bulkRuns(action,ids),result=>changed(result,action));
   }
   async function remove(run:Run) {
-    if(!window.confirm(`${t('删除运行记录')} “${run.name}” · ${time(run,language)}? ${t('此操作无法撤销。')}`))return;
+    if(!await confirm({title:t('确认删除吗？'),message:`${t('删除运行记录')} “${run.name}” · ${time(run,language)}`,detail:t('此操作无法撤销。'),confirmLabel:t('确认删除'),danger:true}))return;
     setDeleting(true);setNotice('');
     try{await api.deleteRun(run.id);onDeleted([run.id]);onChanged();}
     catch(reason){setNotice(reason instanceof Error?reason.message:String(reason));}
@@ -61,8 +63,8 @@ function PlanRecords({group,language,canManage,revision,selectedId,onSelect,onRe
   }
   return <section className="panel plan-run-records" aria-label={t('全部运行记录')}>
     <BulkSelectionBar selection={selection} language={language}>
-      <button type="button" className="ghost" disabled={disabled} onClick={()=>bulk('cancel')}><Square/>{t('批量取消运行')}</button>
-      <button type="button" className="ghost danger" disabled={!canManage||disabled} onClick={()=>bulk('delete')}><Trash2/>{t('批量删除')}</button>
+      <button type="button" className="ghost" disabled={disabled} onClick={()=>void bulk('cancel')}><Square/>{t('批量取消运行')}</button>
+      <button type="button" className="ghost danger" disabled={!canManage||disabled} onClick={()=>void bulk('delete')}><Trash2/>{t('批量删除')}</button>
     </BulkSelectionBar>
     {notice&&<p className="alert" role="alert">{notice}</p>}
     <div className="table-scroll"><table><thead><tr>
@@ -79,8 +81,9 @@ function PlanRecords({group,language,canManage,revision,selectedId,onSelect,onRe
   </section>;
 }
 
-export function RunHistory({plans,runs,language,dark,canManage,revision,onSelectRun,onReport,onChanged}:{
+export function RunHistory({plans,runs,language,dark,canManage,revision,initialPlanId,onInitialPlanConsumed,onSelectRun,onReport,onChanged}:{
   plans:TestPlan[];runs:Run[];language:Language;dark:boolean;canManage:boolean;revision:number;
+  initialPlanId?:string|null;onInitialPlanConsumed?:()=>void;
   onSelectRun:(run:Run)=>void;onReport:(run:Run)=>void;onChanged:()=>void;
 }) {
   const t=(value:string)=>tr(language,value);
@@ -89,12 +92,25 @@ export function RunHistory({plans,runs,language,dark,canManage,revision,onSelect
   const [selected,setSelected]=useState<Run|null>(null);
   const [tab,setTab]=useState<'result'|'records'>('result');
   const [localRevision,setLocalRevision]=useState(0);
-  const page=useServerPagination(api.runPlanGroups,!group,revision+localRevision,filters);
+  const confirm=useConfirm();
+  const page=useServerPagination(api.runPlanGroups,!group,revision+localRevision,initialPlanId?{...filters,q:initialPlanId}:filters);
+  const groupSelection=useBulkSelection(JSON.stringify(filters));
+  const groupIds=page.items.map(value=>value.id);
+  const groupSelectionDisabled=page.loading||!!page.error||groupSelection.busy;
   const fresh=selected&&runs.find(run=>run.id===selected.id&&run.updated_at>selected.updated_at);
   const current=fresh||selected;
   function choose(run:Run) {setSelected(run);setTab('result');onSelectRun(run);window.scrollTo(0,0);}
   function open(value:RunPlanGroup) {setGroup(value);choose(value.latest_run);}
   function changed() {setLocalRevision(value=>value+1);onChanged();}
+  async function bulkDeleteGroups() {
+    if(!await confirm({title:t('确认删除吗？'),message:`${t('批量删除')} ${groupSelection.ids.size} ${t('条运行记录')}`,detail:t('仅删除选中测试计划下已结束的运行记录，此操作无法撤销。'),confirmLabel:t('确认删除'),danger:true}))return;
+    void groupSelection.execute(ids=>api.bulkRunPlanGroups('delete',ids),changed);
+  }
+  useEffect(()=>{
+    if(!initialPlanId||group||page.loading||page.error)return;
+    const target=page.items.find(value=>value.plan_id===initialPlanId);
+    if(target){open(target);onInitialPlanConsumed?.();}
+  },[initialPlanId,group,page.loading,page.error,page.items,onInitialPlanConsumed]);
   if(group)return <div className="run-history-detail">
     <PageHeader icon={History} title={group.name} breadcrumb={<button type="button" className="ghost" onClick={()=>{setGroup(null);setSelected(null)}}><ArrowLeft/>{t('所有测试计划')}</button>} actions={<button type="button" className="ghost" onClick={changed}><RefreshCw/>{t('刷新')}</button>}/>
     <div className="run-history-tabs" role="group" aria-label={t('计划运行记录')}>
@@ -110,11 +126,14 @@ export function RunHistory({plans,runs,language,dark,canManage,revision,onSelect
   return <section className="panel history run-plan-history">
     <PageHeader icon={History} title={t('运行记录')} count={page.total} description={t('按测试计划查看运行记录')}/>
     <ListToolbar language={language} search={filters.q||''} onSearch={q=>setFilters(value=>({...value,q}))} searchLabel={t('搜索测试计划')} onReset={()=>setFilters({})} filters={[
-      {label:t('最近状态'),value:filters.status||'',onChange:status=>setFilters(value=>({...value,status})),options:Object.entries(statusNames).map(([value,label])=>({value,label:t(label)}))},
-      {label:t('测试类型'),value:filters.benchmark||'',onChange:benchmark=>setFilters(value=>({...value,benchmark})),options:types.map(value=>({value,label:value}))},
+      {label:t('状态'),value:filters.status||'',onChange:status=>setFilters(value=>({...value,status})),options:Object.entries(statusNames).map(([value,label])=>({value,label:t(label)}))},
+      {label:t('类型'),value:filters.benchmark||'',onChange:benchmark=>setFilters(value=>({...value,benchmark})),options:types.map(value=>({value,label:value}))},
     ]}/>
-    <div className="table-scroll"><table><thead><tr><th>{t('测试计划')}</th><th>{t('类型')}</th><th>{t('运行次数')}</th><th>{t('最近状态')}</th><th>{t('最近运行')}</th><th>{t('操作')}</th></tr></thead><tbody>{page.items.map(value=><tr key={value.id}>
-      <td><button type="button" className="text-button run-history-link" onClick={()=>open(value)}>{value.name}</button></td><td>{value.latest_run.benchmark}</td><td>{value.run_count}</td><td><Status run={value.latest_run} language={language}/></td><td><time dateTime={value.latest_run.created_at}>{time(value.latest_run,language)}</time></td><td><button type="button" className="ghost" onClick={()=>{open(value);setTab('records')}}>{t('全部运行记录')}</button></td>
+    <BulkSelectionBar selection={groupSelection} language={language}>
+      <button type="button" className="ghost danger" disabled={!canManage||groupSelectionDisabled} onClick={()=>void bulkDeleteGroups()}><Trash2 aria-hidden="true"/>{t('批量删除')}</button>
+    </BulkSelectionBar>
+    <div className="table-scroll"><table><thead><tr><th className="selection-cell"><SelectionCheckbox label={t('全选当前页')} checked={!!groupIds.length&&groupIds.every(id=>groupSelection.ids.has(id))} mixed={groupIds.some(id=>groupSelection.ids.has(id))&&!groupIds.every(id=>groupSelection.ids.has(id))} disabled={!canManage||groupSelectionDisabled||!groupIds.length} onChange={checked=>groupSelection.toggle(groupIds,checked)}/></th><th>{t('测试计划')}</th><th>{t('类型')}</th><th>{t('运行次数')}</th><th>{t('最近状态')}</th><th>{t('最近运行')}</th><th>{t('操作')}</th></tr></thead><tbody>{page.items.map(value=><tr key={value.id} className={groupSelection.ids.has(value.id)?'bulk-selected':undefined}>
+      <td className="selection-cell"><SelectionCheckbox label={`${t('选择记录')} ${value.name}`} checked={groupSelection.ids.has(value.id)} disabled={!canManage||groupSelectionDisabled} onChange={checked=>groupSelection.toggle([value.id],checked)}/></td><td><button type="button" className="text-button run-history-link" onClick={()=>open(value)}>{value.name}</button></td><td>{value.latest_run.benchmark}</td><td>{value.run_count}</td><td><Status run={value.latest_run} language={language}/></td><td><time dateTime={value.latest_run.created_at}>{time(value.latest_run,language)}</time></td><td><button type="button" className="ghost" onClick={()=>{open(value);setTab('records')}}>{t('全部运行记录')}</button></td>
     </tr>)}</tbody></table></div>
     {!page.loading&&!page.error&&!page.total&&<EmptyState icon={History} title={t(filters.q||filters.status||filters.benchmark?'没有匹配的记录，请调整搜索或筛选条件。':'暂无运行记录')}/>}
     <Feedback page={page} language={language}/><Pagination {...page} total={page.total} language={language} label={t('测试计划')} disabled={page.loading}/>

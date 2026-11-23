@@ -81,8 +81,8 @@ export function resultColumns(runs:EvaluationSummary[]) {
   const columns:Array<{id:string;k?:number;key:string}>=[];
   const seen=new Set<string>();
   for(const run of runs) for(const [id,summary] of Object.entries(run.summary?.metrics||{})) {
-    const k=id==='rules.recall_at_k'?summary.k:undefined;
-    const key=id==='rules.recall_at_k'?`${id}:${k??'unknown'}`:id;
+    const k=['rules.recall_at_k','rules.precision_at_k'].includes(id)?summary.k:undefined;
+    const key=['rules.recall_at_k','rules.precision_at_k'].includes(id)?`${id}:${k??'unknown'}`:id;
     if(!seen.has(key)){seen.add(key);columns.push({id,k,key})}
   }
   return columns;

@@ -26,7 +26,7 @@ Windows PowerShell：
 .\docker\start.ps1
 ```
 
-`build` 构建 `prismlab-api:local`、`prismlab-web:local` 两个应用镜像；`start` 启动应用及 PostgreSQL，不自动构建，首次联网启动会拉取 `postgres:16`。修改源码后依次重新执行两个脚本。
+`build` 构建 `prismlab-api:local`、`prismlab-web:local` 两个应用镜像；`start` 启动 Web、API、质量评测 worker、通用后台 worker 及 PostgreSQL，不自动构建，首次联网启动会拉取 `postgres:16`。两个 worker 与 API 共用后端镜像、数据库和密钥目录。修改源码后依次重新执行两个脚本。
 
 打开 **http://localhost:8080**。容器启动成功不等于服务已就绪：API 会等待数据库健康，但 Web 的 `depends_on` 不等待 API 健康检查。短暂 502 可稍后刷新，持续失败请检查日志。
 
@@ -36,7 +36,16 @@ docker compose -f docker/compose.yaml logs -f
 docker compose -f docker/compose.yaml down
 ```
 
-也可直接执行 `docker compose -f docker/compose.yaml up --build -d`。后端仅启动一个 worker 和一个 API 实例，避免多个进程重复调度测试计划。数据库已使用 PostgreSQL。API 端口不直接暴露到宿主机，通过 Nginx 的 `/api/` 转发。
+也可直接执行 `docker compose -f docker/compose.yaml up --build -d`。API 仍仅启动一个 Uvicorn worker 和一个 API 实例，避免多个进程重复调度测试计划；质量评测由独立的 `evaluation-worker` 容器处理，性能测试、数据集构建和 AI 报告由 `worker` 容器处理。两个 worker 默认各并发 2 个任务，分别可通过 `EVALUATION_WORKER_CONCURRENCY` 和 `TASK_WORKER_CONCURRENCY` 调整。数据库已使用 PostgreSQL。API 端口不直接暴露到宿主机，通过 Nginx 的 `/api/` 转发。
+
+质量评测 worker 使用 PostgreSQL 中的持久队列领取任务。API 负责数据库初始化，worker 不执行迁移；如果需要扩展评测吞吐量，可以增加 worker 容器数量：
+
+```bash
+docker compose -f docker/compose.yaml up -d --scale evaluation-worker=2
+docker compose -f docker/compose.yaml up -d --scale worker=2
+```
+
+计划调度仍由 API 进程拥有；性能压测、数据集构建和 AI 报告已经进入持久化后台队列。API 继续保持单实例、单 Uvicorn worker。
 
 ## 离线镜像包
 

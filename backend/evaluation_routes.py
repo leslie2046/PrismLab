@@ -7,10 +7,11 @@ from backend.evaluation_results import summarize, export_run
 from backend.evaluation_contracts import (DEFAULT_JUDGE_PROMPT, METRICS, RUN_STATES, CASE_STATES, METRIC_STATES, PrepareEvaluation,
     metric_catalog, model_evidence, scoring_engine, evaluation_type)
 from backend.evaluation_store import EvaluationStore, fingerprint
-from backend.evaluation_recall import recall_settings
+from backend.evaluation_recall import read_dify_retrieval_model, recall_settings
 from backend.schemas import PlaygroundRequest
 from backend.dataset_llm import generation_parameters
 from backend.tenant_context import can_manage_workspace
+from backend.bulk import EvaluationBulk
 
 
 def install_evaluation_routes(app, store, resolve_access, concrete_store):
@@ -76,7 +77,9 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
         # settings. PrismLab's fusion controls are only meaningful once there
         # are multiple routes (or an explicit local override is supplied).
         multi_route = bool(len(payload.target.selections) > 1 or payload.target.retrieval_reranker or payload.target.retrieval_score_threshold is not None)
-        target.update(**payload.target.model_dump(exclude={'selection','benchmark','selections','retrieval_reranker'}))
+        target.update(**payload.target.model_dump(exclude={'selection','benchmark','selections','retrieval_reranker'}, exclude_none=True))
+        if not multi_route:
+            target.pop('retrieval_top_k', None)
         if multi_route:
             selections = payload.target.selections or [payload.target.selection]
             bases = [primary] + [resolve(s.model_dump(), 'dify-retrieve') for s in selections[1:]]
@@ -88,6 +91,25 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
                 raise HTTPException(400, '多路召回需要选择重排模型，或在空间设置中配置默认重排模型')
             target['knowledge_bases'] = bases
             target['retrieval_reranker'] = resolve(reranker, 'reranker') if reranker else None
+        if payload.target.benchmark == 'dify-retrieve':
+            # Freeze Dify defaults at preparation time so history describes
+            # the configuration used by this run, not a later live setting.
+            snapshots = []
+            bases = target.get('knowledge_bases') or [target]
+            for base in bases:
+                selection = base.get('selection') or {}
+                try:
+                    config, key = resolve_access(PlaygroundRequest(
+                        benchmark='dify-retrieve', provider_id=selection['id'],
+                        model=selection.get('model'), credential_id=selection.get('credential_id'),
+                        query='read Dify default retrieval settings'))
+                    model = read_dify_retrieval_model(config, key)
+                except (HTTPException, KeyError, TypeError):
+                    model = None
+                snapshots.append({'selection_id': selection.get('id'),
+                                  'knowledge_base_name': base.get('name'),
+                                  'model': model})
+            target['dify_retrieval_defaults'] = snapshots
         judge_snapshot = resolve(judge, 'llm', scoring=True) if needs_judge else None
         if judge_snapshot:
             judge_snapshot['prompt'] = payload.judge_prompt or defaults.get('evaluation_judge_prompt') or DEFAULT_JUDGE_PROMPT
@@ -98,7 +120,7 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
         cutoff = recall_settings(target, metrics, resolve_access)
         if cutoff:
             for metric in metrics:
-                if metric['id'] == 'rules.recall_at_k':
+                if metric['id'] in {'rules.recall_at_k', 'rules.precision_at_k'}:
                     metric.update(cutoff)
         return public(target_repo.prepare(payload, request_hash, {'target': target, 'result_judge': judge_snapshot,
                                   'scoring_engine': scoring_engine(engine), 'metrics': metrics, 'budget': budget_values,
@@ -118,7 +140,21 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
 
     @router.get('/evaluation-runs')
     def list_runs(limit: int = Query(50, ge=1, le=100), dataset_id: str | None = Query(None, min_length=1, max_length=128)):
-        return {'items': [{k: v for k, v in item.items() if k != 'worker_token'} for item in repo().list(limit, dataset_id=dataset_id)]}
+        items = repo().list(limit, dataset_id=dataset_id)
+        for item in items:
+            target = (item.get('evidence') or {}).get('target') or {}
+            if target.get('benchmark') == 'dify-retrieve':
+                reranker = target.get('retrieval_reranker') or {}
+                item['retrieval_parameters'] = {
+                    'top_k': target.get('retrieval_top_k'),
+                    'candidate_top_k': target.get('retrieval_candidate_top_k'),
+                    'score_threshold': target.get('retrieval_score_threshold'),
+                    'reranker': reranker.get('model') or (reranker.get('selection') or {}).get('model'),
+                    'fusion': bool(target.get('knowledge_bases')),
+                    'dify_defaults': target.get('dify_retrieval_defaults'),
+                }
+            item.pop('evidence', None)
+        return {'items': [{k: v for k, v in item.items() if k != 'worker_token'} for item in items]}
 
     @router.get('/evaluation-runs/{run_id}')
     def get_run(run_id: str):
@@ -131,6 +167,21 @@ def install_evaluation_routes(app, store, resolve_access, concrete_store):
         if not can_manage_workspace():
             raise HTTPException(403, '仅空间所有者或管理员可删除评测记录')
         return repo().delete(run_id)
+
+    @router.post('/evaluation-runs/bulk')
+    def bulk_delete_runs(payload: EvaluationBulk):
+        if not can_manage_workspace():
+            raise HTTPException(403, '仅空间所有者或管理员可批量删除评测记录')
+        result = {'succeeded': [], 'skipped': [], 'failed': []}
+        for run_id in payload.ids:
+            try:
+                repo().delete(run_id)
+                result['succeeded'].append(run_id)
+            except HTTPException as error:
+                result['failed'].append({'id': run_id, 'message': str(error.detail)})
+            except Exception:
+                result['failed'].append({'id': run_id, 'message': '删除失败，请刷新列表后重试'})
+        return result
 
     @router.get('/evaluation-runs/{run_id}/export')
     def export(run_id: str, format: Literal['json','jsonl','csv'] = 'json'):

@@ -1,23 +1,23 @@
 import {useEffect, useRef, useState} from 'react';
-import {Play, X} from 'lucide-react';
+import {Play, Save, X} from 'lucide-react';
 import type {Catalog, Dataset, DatasetSettings, LlmSelection} from '../types';
 import {tr, type Language} from '../i18n';
 import {createClientId} from '../clientId';
 import {datasetApi, llmChoices, rerankerChoices, selectionValue} from '../datasetApi';
-import {evaluationApi, type Evaluation, type EvaluationCreate, type Metric} from '../evaluationApi';
+import {evaluationApi, type Evaluation, type EvaluationConfig, type EvaluationCreate, type Metric} from '../evaluationApi';
 import {WorkspaceDialog} from './WorkspaceDialog';
 import {SearchableSelect} from './SearchableSelect';
 import {SearchableMultiSelect} from './SearchableMultiSelect';
 import {InfoTip} from './InfoTip';
-import {recallLabel} from '../evaluationPresentation';
 import {evaluationTypeLabels, type EvaluationType} from '../evaluationTypes';
 
-export const metricNames:Record<string,string>={'deepeval.answer_relevancy':'回答相关性','deepeval.faithfulness':'回答忠实度','deepeval.reference_correctness':'参考答案正确性','deepeval.context_precision':'上下文精确率（有参考）','deepeval.context_recall':'上下文召回率（有参考）','ragas.faithfulness':'回答忠实度','ragas.context_recall':'上下文召回率（有参考）','ragas.context_precision':'上下文精确率（有参考）','ragas.context_precision_without_reference':'上下文精确率（无参考）','ragas.answer_accuracy':'事实正确性','rules.recall_at_k':'Recall@K','rules.mrr':'MRR','rules.ndcg':'nDCG','deepeval.custom':'自定义业务评分','rules.required_text':'必需短语','rules.json_schema':'JSON Schema'};
+export const metricNames:Record<string,string>={'deepeval.answer_relevancy':'回答相关性','deepeval.faithfulness':'回答忠实度','deepeval.reference_correctness':'参考答案正确性','deepeval.context_precision':'上下文精确率','deepeval.context_recall':'上下文召回率','ragas.faithfulness':'回答忠实度','ragas.context_recall':'上下文召回率','ragas.context_precision':'上下文精确率','ragas.context_precision_without_reference':'上下文精确率（无参考）','ragas.answer_accuracy':'事实正确性','rules.recall_at_k':'Recall@K','rules.precision_at_k':'Precision@K','rules.mrr':'MRR','rules.ndcg':'nDCG','deepeval.custom':'自定义业务评分'};
 export function metricName(metric:{id:string;k?:number}) {
-  return metric.id==='rules.recall_at_k'?recallLabel(metric.k):(metricNames[metric.id]||metric.id);
+  return ['rules.recall_at_k','rules.precision_at_k'].includes(metric.id)?`${metric.id==='rules.recall_at_k'?'Recall':'Precision'}@${metric.k||'K'}`:(metricNames[metric.id]||metric.id);
 }
 export const metricHelp:Record<string,string>={
   'rules.recall_at_k':'前 K 个检索结果中命中的相关片段数 ÷ 标注的相关片段总数。单知识库的 K 读取自 Dify 配置，多知识库使用最终 Top K；创建评测时保存，实际返回不足 K 条也不改变 K。',
+  'rules.precision_at_k':'前 K 个实际返回的检索结果中，标注为相关的片段数 ÷ 实际返回的结果数。只按分段 ID 计算，不调用 LLM；返回少于 K 条时按实际返回数量计算。',
   'rules.mrr':'第一个相关片段出现位置的倒数。相关片段越早出现，分数越高；前 K 个结果没有命中时为 0。',
   'rules.ndcg':'根据相关性等级衡量排序质量。越相关的片段排在越前面，nDCG 越高。',
 };
@@ -28,9 +28,10 @@ const fieldNames:Record<string,string> = {
 };
 const errorText = (error:unknown) => error instanceof Error ? error.message : String(error);
 
-export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDataset}:{
+export function EvaluationDialog({catalog, language, onClose, onCreated, onConfigSaved, fixedDataset, mode='run'}:{
   fixedDataset?:Dataset;
   catalog:Catalog|null; language:Language; onClose:()=>void; onCreated:(run:Evaluation)=>void;
+  onConfigSaved?:(dataset:Dataset)=>void; mode?:'run'|'config';
 }) {
   const t = (text:string) => tr(language, text);
   const key = useRef(''), lastPayload = useRef('');
@@ -38,9 +39,9 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const [dataset, setDataset] = useState(fixedDataset?.id || '');
-  const [name, setName] = useState(''), [benchmark, setBenchmark] = useState(fixedDataset?.evaluation_purpose === 'retrieval' ? 'dify-retrieve' : 'llm');
+  const [benchmark, setBenchmark] = useState(fixedDataset?.evaluation_purpose === 'retrieval' ? 'dify-retrieve' : 'llm');
   const [target, setTarget] = useState(''), [judge, setJudge] = useState('');
-  const [engine, setEngine] = useState('deepeval'), [template, setTemplate] = useState(fixedDataset?.evaluation_purpose === 'retrieval' ? 'retrieval' : 'reference_qa');
+  const [engine, setEngine] = useState('rules'), [template, setTemplate] = useState(fixedDataset?.evaluation_purpose === 'retrieval' ? 'retrieval' : 'reference_qa');
   const [evaluationType, setEvaluationType] = useState<EvaluationType>(fixedDataset?.evaluation_purpose === 'retrieval' ? 'retrieval' : 'rag');
   const [topK, setTopK] = useState(5);
   const [knowledgeTargets, setKnowledgeTargets] = useState<string[]>([]);
@@ -51,10 +52,9 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
   // null follows the recommended plan; an explicit list preserves the user's custom selection.
   const [chosen, setChosen] = useState<string[]|null>(null);
   const [thresholds, setThresholds] = useState<Record<string,number>>({});
-  const [scope, setScope] = useState('5'), [customLimit, setCustomLimit] = useState('50');
+  const [scope, setScope] = useState('all'), [customLimit, setCustomLimit] = useState('50');
   const [prompt, setPrompt] = useState(''), [criteria, setCriteria] = useState('');
-  const [examples, setExamples] = useState(''), [phrases, setPhrases] = useState('');
-  const [schema, setSchema] = useState('{"type":"object"}');
+  const [examples, setExamples] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [loading, setLoading] = useState(true), [loaded, setLoaded] = useState(false), [reload, setReload] = useState(0);
 
@@ -69,11 +69,26 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
     })(), evaluationApi.capabilities(), datasetApi.settings()])
       .then(([data, capabilities, defaults]: [ {items: Dataset[]}, {metrics: Metric[]}, DatasetSettings]) => {
         if (!active) return;
+        const saved = fixedDataset?.evaluation_config;
         setDatasets(data.items); setMetrics(capabilities.metrics);
         const compatible=data.items.filter(item=>!item.evaluation_purpose || ['both',evaluationType].includes(item.evaluation_purpose));
         setDataset(fixedDataset?.id || compatible.find(item => item.item_count > 0)?.id || compatible[0]?.id || '');
-        setJudge(selectionValue(defaults.default_judge_llm)); setEngine(defaults.scoring_engine);
-        setReranker(selectionValue(defaults.default_reranker || null));
+        setJudge(selectionValue(saved?.judge || defaults.default_judge_llm)); setEngine((saved?.scoring_engine || defaults.scoring_engine) as string);
+        setReranker(selectionValue(saved?.target?.retrieval_reranker || defaults.default_reranker || null));
+        if (saved) {
+          setEvaluationType(saved.evaluation_type); setBenchmark(saved.benchmark); setTemplate(saved.template);
+          setScope(saved.sample_limit === null ? 'all' : String(saved.sample_limit));
+          setPrompt(saved.target.prompt || '');
+          setTopK(saved.target.retrieval_top_k || 5); setCandidateK(saved.target.retrieval_candidate_top_k || 20); setScoreThreshold(saved.target.retrieval_score_threshold || 0);
+          const selections = saved.target.selections?.length ? saved.target.selections : saved.target.selection ? [saved.target.selection] : [];
+          setKnowledgeTargets(selections.map(value => JSON.stringify(value)));
+          if (saved.target.selection && saved.benchmark !== 'dify-retrieve') setTarget(JSON.stringify(saved.target.selection));
+          setChosen(saved.metrics.map(metric => metric.id));
+          setThresholds(Object.fromEntries(saved.metrics.map(metric => [metric.id, metric.threshold])));
+          const custom = saved.metrics.find(metric => metric.id === 'deepeval.custom');
+          setCriteria(custom?.criteria || ''); setExamples(custom?.examples || '');
+          initializedTargets.current = fixedDataset?.id || '';
+        }
         setLoaded(true);
       }).catch(error => { if (active) setError(errorText(error)); })
       .finally(() => { if (active) setLoading(false); });
@@ -105,8 +120,6 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
     : targets.some(option => option.value === target);
   const validJudge = !needsJudge || llms.some(option => option.value === judge);
   const canSubmit = loaded && compatibleDatasets.some(item=>item.id===dataset) && validTarget && validJudge && effective.length > 0;
-  const referenceRequired = effective.some(id => metrics.find(m => m.id === id)?.required_fields.includes('expected_output'));
-  const retrievalRequired = effective.some(id => metrics.find(m => m.id === id)?.required_fields.includes('retrieval_context'));
   const buttonText = busy ? t('提交中…') : limit === null ? t('开始全部评测') : t('开始试跑');
 
   useEffect(() => {
@@ -128,27 +141,30 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
     const compatible=datasets.filter(item=>!item.evaluation_purpose || item.evaluation_purpose==='both' || item.evaluation_purpose===value);
     if(!compatible.some(item=>item.id===dataset))setDataset(compatible.find(item=>item.item_count>0)?.id || compatible[0]?.id || '');
   }
-  return <WorkspaceDialog className="evaluation-dialog" title={t('新建评测')} busy={busy} language={language} onClose={onClose}>
-    <form className="evaluation-form" onSubmit={async event => {
+  const form = <form className={`evaluation-form${mode === 'config' ? ' evaluation-config-form' : ''}`} onSubmit={async event => {
       event.preventDefault();
       if (!canSubmit || busy) return;
       setBusy(true); setError('');
       try {
-        const payload:EvaluationCreate = {
-          evaluation_type:evaluationType, dataset_id:dataset,
-          sample_kinds:['single_turn'],
-          name:name.trim() || `${datasets.find(item => item.id === dataset)?.name || t('数据集')} · ${t(evaluationTypeLabels[evaluationType])}`.slice(0,120),
-          idempotency_key:key.current, template, sample_limit:limit,
-          target:{benchmark,selection:JSON.parse(evaluationType==='retrieval'?knowledgeTargets[0]:target) as LlmSelection,prompt:evaluationType==='retrieval'?'':prompt,max_tokens:1024,retrieval_top_k:topK,
-            ...(multiRoute?{selections:knowledgeTargets.map(value=>JSON.parse(value) as LlmSelection),
+        const config:EvaluationConfig = {
+          evaluation_type:evaluationType,
+          benchmark, template, sample_limit:limit,
+          target:{benchmark,selection:JSON.parse(evaluationType==='retrieval'?knowledgeTargets[0]:target) as LlmSelection,prompt:evaluationType==='retrieval'?'':prompt,max_tokens:1024,
+            ...(multiRoute?{retrieval_top_k:topK,selections:knowledgeTargets.map(value=>JSON.parse(value) as LlmSelection),
               retrieval_reranker:reranker?JSON.parse(reranker):null,retrieval_candidate_top_k:candidateK,retrieval_score_threshold:scoreThreshold}:{})},
           scoring_engine:engine, judge:needsJudge && judge ? JSON.parse(judge) : null,
-          metrics:effective.map(id => ({id, ...(['rules.mrr','rules.ndcg'].includes(id)?{k:topK}:{}), threshold:thresholds[id] ?? metrics.find(m => m.id === id)?.threshold.default ?? .5,
+          metrics:effective.map(id => ({id, ...(['rules.mrr','rules.ndcg','rules.precision_at_k'].includes(id) && multiRoute?{k:topK}:{}), threshold:thresholds[id] ?? metrics.find(m => m.id === id)?.threshold.default ?? .5,
             ...(id === 'deepeval.custom' ? {criteria,examples} : {}),
-            ...(id === 'rules.required_text' ? {required_text:phrases.split('\n').map(s => s.trim()).filter(Boolean)} : {}),
-            ...(id === 'rules.json_schema' ? {json_schema:JSON.parse(schema)} : {}),
           })),
-          use_cache:true,
+        };
+        if (mode === 'config') {
+          onConfigSaved?.(await datasetApi.saveEvaluationConfig(dataset, config));
+          return;
+        }
+        const payload:EvaluationCreate = {
+          ...config, dataset_id:dataset, sample_kinds:['single_turn'],
+          name:`${datasets.find(item => item.id === dataset)?.name || t('数据集')} · ${t(evaluationTypeLabels[evaluationType])}`.slice(0,120),
+          idempotency_key:key.current, use_cache:true,
         };
         const signature = JSON.stringify({...payload,idempotency_key:''});
         if (lastPayload.current !== signature) {
@@ -166,7 +182,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             <h3 id="evaluation-type-heading" className="label-with-tip">{t('评测类型')}<InfoTip label={t('评测类型说明')} text={t('RAG 评测检查最终回答及其依据；检索评测只检查召回内容和排序，不生成回答。')} /></h3>
             <div className="dataset-source-tabs" role="group" aria-label={t('评测类型')}>{(['rag','retrieval'] as EvaluationType[]).map(value=><button type="button" key={value} aria-pressed={evaluationType===value} disabled={!!fixedDataset?.evaluation_purpose && !['both',value].includes(fixedDataset.evaluation_purpose)} onClick={()=>changeType(value)}>{t(evaluationTypeLabels[value])}</button>)}</div>
           </section>
-          <section className="evaluation-setup-section" aria-labelledby="evaluation-data-heading">
+          {mode === 'run' && <section className="evaluation-setup-section" aria-labelledby="evaluation-data-heading">
             <h3 id="evaluation-data-heading">{t(fixedDataset?'评测数据集':'1. 选择数据集')}</h3>
             {fixedDataset ? <div className="evaluation-fixed-dataset"><strong>{fixedDataset.name}</strong><span>{fixedDataset.item_count} {t('样本')}</span></div> : <label className="field"><span>{t('数据集')}</span>
               <select aria-label={t('数据集')} value={dataset} onChange={e => setDataset(e.target.value)}>
@@ -174,7 +190,7 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
                 {compatibleDatasets.map(item => <option key={item.id} value={item.id}>{item.name} · {item.item_count} {t('样本')}</option>)}
               </select>
             </label>}
-          </section>
+          </section>}
           <section className="evaluation-setup-section" aria-labelledby="evaluation-target-heading">
             <h3 id="evaluation-target-heading">{t(fixedDataset?'1. 选择被测对象':'2. 选择被测对象')}</h3>
             <div className="evaluation-target-fields">
@@ -219,12 +235,6 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
                 <option value="reference_qa">{t('对照参考答案')}</option><option value="reference_free">{t('不使用参考答案')}</option>
               </select>
             </label>}
-            <div className="evaluation-plan" role="status">
-              <span>{t(chosen === null ? '推荐指标' : '已选指标')} · {engine === 'rules' ? t('确定性规则') : engine === 'ragas' ? 'RAGAS' : 'DeepEval'}</span>
-              <strong>{effective.length ? effective.map(id => t(metricNames[id] || id)).join('、') : t('尚未选择指标')}</strong>
-              {referenceRequired && <small>{t('所选指标需要参考答案。若数据尚未补充答案，请先在数据集中手工添加、导入，或开启“生成参考答案”后构建新数据。缺失参考答案的样本将标为不可计算，不会自动生成答案。')}</small>}
-              {retrievalRequired && <small>{t('需要应用返回实际召回内容；参考资料不能替代实际召回。')}</small>}
-            </div>
             {loaded && !effective.length && <p className="evaluation-guidance" role="status">{t(
               engine === 'ragas' && template === 'reference_free' && benchmark === 'llm'
                 ? 'RAGAS 当前的无参考指标需要实际召回。可改用参考答案，或切换为 DeepEval。'
@@ -254,9 +264,6 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
             </div>
           </section>
           <div className="evaluation-fields">
-            <div className="evaluation-evidence-grid">
-              <label className="field"><span>{t('评测名称')}</span><input value={name} placeholder={t('留空自动命名')} onChange={e => setName(e.target.value)} maxLength={120}/></label>
-            </div>
             <fieldset className="evaluation-metrics"><legend>{t('选择指标')}</legend>
               {available.map(metric => <div className="evaluation-metric-row" key={metric.id}>
                 <label><input type="checkbox" checked={effective.includes(metric.id)} onChange={e => setChosen(e.target.checked ? [...effective,metric.id] : effective.filter(id => id !== metric.id))}/>
@@ -273,20 +280,19 @@ export function EvaluationDialog({catalog, language, onClose, onCreated, fixedDa
               <button className="ghost" type="button" onClick={() => setCriteria(t('必须先给出明确结论，再列出依据；涉及未知信息时应说明不确定，禁止编造金额和日期。'))}>{t('填入规则示例')}</button>
               <label className="field"><span>{t('评分示例 / Rubric')}</span><textarea value={examples} onChange={e => setExamples(e.target.value)} maxLength={10000}/></label>
             </>}
-            {effective.includes('rules.required_text') && <label className="field"><span>{t('必需短语（每行一个）')}</span><textarea required value={phrases} onChange={e => setPhrases(e.target.value)}/></label>}
-            {effective.includes('rules.json_schema') && <label className="field"><span>JSON Schema</span><textarea required value={schema} onChange={e => setSchema(e.target.value)}/></label>}
             {benchmark === 'llm' && <label className="field"><span>{t('目标系统提示词')}</span><textarea value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={20000}/></label>}
           </div>
         </fieldset>
         {error && <div className="alert" role="alert">{error}</div>}
         {!loaded && !loading && <button className="ghost" type="button" onClick={() => setReload(value => value+1)}>{t('重新加载')}</button>}
-        {loaded && !compatibleDatasets.length && <p role="status">{t('请先创建或修改为对应用途或两者通用的数据集，并添加启用样本。')}</p>}
+        {loaded && mode === 'run' && !compatibleDatasets.length && <p role="status">{t('请先创建或修改为对应用途或两者通用的数据集，并添加启用样本。')}</p>}
       </div>
       <footer className="evaluation-setup-footer">
-        <div className="workspace-dialog-actions"><button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>
-          <button className="primary" disabled={busy || !canSubmit}><Play aria-hidden="true"/>{buttonText}</button>
+        <div className="workspace-dialog-actions">{mode === 'run' && <button type="button" className="ghost" disabled={busy} onClick={onClose}>{t('取消')}</button>}
+          <button className="primary" disabled={busy || !canSubmit}>{mode === 'config' ? <Save aria-hidden="true"/> : <Play aria-hidden="true"/>}{mode === 'config' ? t('保存评测配置') : buttonText}</button>
         </div>
       </footer>
-    </form>
-  </WorkspaceDialog>;
+    </form>;
+  if (mode === 'config') return <section className="panel system-settings-panel dataset-settings-panel dataset-evaluation-config-panel"><div className="panel-head"><div><h2>{t('数据集评测配置')}</h2><p>{t('保存后，发起评测将直接使用此配置，不再弹出配置窗口。')}</p></div></div>{form}</section>;
+  return <WorkspaceDialog className="evaluation-dialog" title={t('新建评测')} busy={busy} language={language} onClose={onClose}>{form}</WorkspaceDialog>;
 }

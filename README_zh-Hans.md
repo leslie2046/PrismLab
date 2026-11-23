@@ -56,7 +56,7 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD='替换为随机强密码'
 ```
 
-然后构建镜像并启动：
+然后构建镜像并启动 Web、API、质量评测 worker、通用后台 worker 和 PostgreSQL：
 
 ```bash
 docker compose --env-file docker/.env -f docker/compose.yaml up --build -d
@@ -78,7 +78,7 @@ PostgreSQL 数据保存在 Compose 的 `postgres_data` 命名卷，密钥、会�
 
 如需分开构建和启动，Linux/macOS 依次执行 `bash docker/build.sh`、`bash docker/start.sh`；Windows PowerShell 依次执行 `.\docker\build.ps1`、`.\docker\start.ps1`。启动脚本使用已有镜像，不自动构建。离线镜像打包和启动排错见 [Docker 部署指南](docker/README.md)。
 
-Docker 中的 `127.0.0.1` 指向容器自身，不是宿主机。访问宿主机上的模型时，请使用 API 容器可访问的地址（例如 Docker Desktop 的 `host.docker.internal`），并检查服务监听地址与防火墙。
+Docker 中的 `127.0.0.1` 指向容器自身，不是宿主机。访问宿主机上的模型时，请使用 API 和两个 worker 容器都可访问的地址（例如 Docker Desktop 的 `host.docker.internal`），并检查服务监听地址与防火墙。
 
 ### 方式二：本地开发
 
@@ -103,7 +103,7 @@ pnpm run dev --host 127.0.0.1
 
 打开 **http://localhost:5173**。Vite 将 `/api` 请求转发到 8000 端口的后端；如果 Vite 使用了其他端口，请以终端显示的地址为准。
 
-应用数据通过 `DATABASE_URL` 保存到 PostgreSQL；本地密钥与报告文件默认保存在 `backend/volumes/`。参见 [PostgreSQL 配置与 SQLite 数据迁移](docs/postgresql.md)。计划调度和压测子进程仍属于单个进程，因此生产后端请保持 **单 worker、单 API 实例**。
+应用数据通过 `DATABASE_URL` 保存到 PostgreSQL；本地密钥与报告文件默认保存在 `backend/volumes/`。参见 [PostgreSQL 配置与 SQLite 数据迁移](docs/postgresql.md)。Docker 部署还会启动质量评测 worker 和通用后台 worker；计划调度仍由 API 进程负责，因此生产后端请保持 **单 worker、单 API 实例**。
 
 本地开发默认使用无认证的 `basic` 模式。如需开发登录与空间功能，在启动后端前通过进程环境变量设置 `AUTH_MODE=app`、`AUTH_PUBLIC_URL=http://localhost:5173` 和强密码 `ADMIN_PASSWORD`。站点地址必须与前端实际访问地址一致，包括端口。
 

@@ -24,7 +24,7 @@ class RunPlanHistoryTests(unittest.TestCase):
         replacement=patch.object(web,'store',self.store);replacement.start();self.addCleanup(replacement.stop)
         app=FastAPI()
         app.router.routes.extend(route for route in web.app.router.routes if getattr(route,'path','') in
-                                 {'/api/run-plan-groups','/api/runs','/api/runs/{run_id}'})
+                                 {'/api/run-plan-groups','/api/run-plan-groups/bulk','/api/runs','/api/runs/{run_id}'})
         self.client=TestClient(app);self.addCleanup(self.client.close)
 
     def add(self, identifier, plan_id, i, **extra):
@@ -92,6 +92,22 @@ class RunPlanHistoryTests(unittest.TestCase):
         self.assertEqual(group['run_count'],2)
         self.assertEqual(self.groups(q="' OR 1=1 --")['total'],0)
         self.assertEqual(self.client.get('/api/run-plan-groups?page_size=101').status_code,422)
+
+    def test_bulk_delete_groups_removes_completed_history_but_keeps_active_runs(self):
+        self.add('completed-a', 'plan-a', 1)
+        self.add('completed-b', 'plan-a', 2)
+        self.add('running', 'plan-b', 3, status='running')
+        self.add('legacy', None, 4)
+        response=self.client.post('/api/run-plan-groups/bulk',json={'action':'delete','ids':['plan:plan-a','plan:plan-b','run:legacy','run:missing']})
+        self.assertEqual(response.status_code,200,response.text)
+        result=response.json()
+        self.assertEqual(result['succeeded'],['plan:plan-a','run:legacy'])
+        self.assertEqual(result['skipped'],['plan:plan-b'])
+        self.assertEqual(result['failed'][0]['id'],'run:missing')
+        self.assertIsNone(self.store.get('completed-a'))
+        self.assertIsNone(self.store.get('completed-b'))
+        self.assertIsNotNone(self.store.get('running'))
+        self.assertIsNone(self.store.get('legacy'))
 
 
 class RunHistoryWorkspaceTests(unittest.TestCase):

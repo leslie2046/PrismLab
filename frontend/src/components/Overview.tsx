@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, ArrowRight, CalendarClock, Clock3, PlayCircle, Database, MessageSquare, LayoutDashboard } from "lucide-react";
+import { AlertTriangle, ArrowRight, CalendarClock, Clock3, PlayCircle, Database, LayoutDashboard } from "lucide-react";
 import { datasetApi } from "../datasetApi";
 import { PageHeader } from "./PageHeader";
 import { EmptyState } from "./EmptyState";
@@ -57,12 +57,8 @@ export function Overview({ plans, runs, language, onOpenRun, onOpenPlans, onOpen
   };
 
   return <div className="overview-page">
-    <PageHeader icon={LayoutDashboard} title={t('工作台')} description={t('从一次调试开始，构建数据集并持续验证模型表现。')} actions={<button className="primary" onClick={onOpenPlans}><CalendarClock />{t('管理测试计划')}</button>} />
-    <div className="workspace-shortcuts">
-      <button onClick={onOpenDatasets}><span className="shortcut-icon"><Database /></span><span><strong>{t('评测数据集')}</strong><small>{t('管理样本，发起评测并查看质量得分')}</small></span><ArrowRight /></button>
-      <button onClick={onOpenPlayground}><span className="shortcut-icon"><MessageSquare /></span><span><strong>Playground</strong><small>{t('调试模型与提示词，检查真实响应')}</small></span><ArrowRight /></button>
-      <button onClick={onOpenPlans}><span className="shortcut-icon"><CalendarClock /></span><span><strong>{t('测试计划')}</strong><small>{t('配置负载与调度，持续观察性能')}</small></span><ArrowRight /></button>
-    </div>
+    <PageHeader icon={LayoutDashboard} title={t('概览')} description={t('从一次调试开始，构建数据集并持续验证模型表现。')} actions={<button className="primary" onClick={onOpenPlans}><CalendarClock />{t('管理测试计划')}</button>} />
+    <div className="overview-scroll">
     <h3 className="workspace-section-title">{t('运行概况')}<span>{t('近 24 小时')}</span></h3>
     <section className="metric-grid overview-metrics" aria-label={t("工作区运行态势")}>
       <article><span>{t("活跃测试计划")}</span><strong>{activePlans.length}</strong><small>{plans.length} {t("个计划")}</small></article>
@@ -116,6 +112,7 @@ export function Overview({ plans, runs, language, onOpenRun, onOpenPlans, onOpen
         </button>)}{!recent.length && <EmptyState compact icon={Clock3} title={t("暂无最近活动")} />}</div>
         {recent.length > 0 && <button className="overview-panel-link" onClick={onOpenDashboard}>{t("进入分析看板")}<ArrowRight aria-hidden="true" /></button>}
       </section>
+    </div>
     </div>
   </div>;
 }

@@ -1,7 +1,8 @@
 """Dedicated durable quality worker: python -m cli.evaluation_worker --concurrency 2.
 
-Use EVALUATION_EMBEDDED_WORKER=false on the API when using dedicated workers.
-Performance scheduling remains owned by the API process.
+Use EVALUATION_EMBEDDED_WORKER=false on the API when using a dedicated quality
+worker. The generic ``cli.worker`` process handles performance, dataset and
+report jobs; plan scheduling remains owned by the API process.
 """
 import argparse
 import asyncio

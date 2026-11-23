@@ -116,6 +116,15 @@ class RecallKUnitTests(unittest.TestCase):
         self.assertEqual(score_rule({'id':'rules.recall_at_k','k':10},sample,observation)[0], 1)
         self.assertEqual(score_rule({'id':'rules.recall_at_k','k':10},sample,{'retrieved_chunk_ids':[]})[0], 0)
 
+    def test_precision_at_k_counts_relevant_returned_ids(self):
+        sample = {'annotations': {'relevant_chunk_ids': ['a', 'c']}}
+        observation = {'retrieved_chunk_ids': ['a', 'b', 'c', 'd', 'e']}
+        score, reason = score_rule({'id': 'rules.precision_at_k', 'k': 5}, sample, observation)
+        self.assertEqual(score, .4)
+        self.assertIn('Precision@5: 2/5', reason)
+        score, _ = score_rule({'id': 'rules.precision_at_k', 'k': 5}, sample, {'retrieved_chunk_ids': []})
+        self.assertEqual(score, 0)
+
     def test_supported_dify_configuration_fields(self):
         for field in ('retrieval_model_dict','retrieval_model'):
             with patch('backend.evaluation_recall.requests.get', return_value=settings(10, field)):

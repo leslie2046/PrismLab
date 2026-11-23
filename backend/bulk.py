@@ -25,5 +25,23 @@ class RunBulk(BulkIds):
     action: Literal['cancel', 'delete']
 
 
+class RunPlanGroupBulk(BulkIds):
+    ids: list[Identifier] = Field(min_length=1, max_length=500)
+    action: Literal['delete']
+
+
+class EvaluationBulk(BulkIds):
+    ids: list[Identifier] = Field(min_length=1, max_length=500)
+    action: Literal['delete']
+
+
 class ItemBulk(BulkIds):
     action: Literal['enable', 'archive', 'delete']
+
+
+class DatasetBulk(BulkIds):
+    action: Literal['delete']
+
+
+class ServiceConfigBulk(BulkIds):
+    action: Literal['delete']
