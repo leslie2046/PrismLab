@@ -105,6 +105,10 @@ All five CLI modules accept `--json-report PATH`. JSON contains per-request timi
 Run `uv run --no-sync python -m cli.perf_<type> --help` from the repository root, or `uv run --no-sync python -m cli.perf_dify retrieve --help` / `uv run --no-sync python -m cli.perf_dify chat --help` for Dify. Install CLI-only dependencies with `uv sync --locked --only-group cli`.
 
 
+Latency percentiles describe successful requests. For example, P95 is the time within which 95% of successful requests finished. These are client-side measurements and include network overhead.
+
+For streaming LLM tests, TTFT is the time to the first output, including reasoning. TPOT is `(latency − TTFT) / (output tokens − 1)`, and tokens/s is `1000 / TPOT` when TPOT is in milliseconds. Both require server-reported output-token counts. Audio RTF is request latency divided by audio duration, so lower is faster.
+
 ## Streaming LLM
 
 Use `--provider`, `--model`, and `--base-url` to select the target. Provider keys and endpoint variables are defined in [shared/providers.py](../shared/providers.py); examples are in [cli/.env.example](../cli/.env.example). LLM endpoints must point to the chat-completions route, not just the server origin.
