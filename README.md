@@ -26,15 +26,6 @@ Connect your own model endpoints and Dify apps. Start with one request in Playgr
 - **Evaluate RAG and retrieval.** Build datasets from documents or Dify, freeze the samples for each run, then score answers and retrieval with RAGAS, DeepEval or ranking rules.
 - **Debug individual requests.** Stream responses in Playground and open a recorded dataset generation step with its prompts and supported model parameters prefilled.
 
-<details>
-<summary>See retrieval evaluation results</summary>
-
-![Retrieval evaluation with RAGAS scores, Recall at 5, pass rates and score distributions](docs/images/retrieval-evaluation.webp)
-
-</details>
-
-<sub>Screenshots show the live interface with example data.</sub>
-
 ## Quick start
 
 Requires Docker and Docker Compose v2. Clone the repository and copy the environment template.
@@ -54,3 +45,9 @@ docker compose --env-file docker/.env -f docker/compose.yaml up --build -d
 Open [localhost:8080](http://localhost:8080), add a model endpoint or Dify connection, and send one request in Playground.
 
 [Local development](docs/repository-layout.md#运行入口) · [CLI benchmarks and metrics](docs/cli-reference.md) · [Workspaces and permissions](docs/tenancy.md) · [MIT license](LICENSE)
+
+## Retrieval evaluation preview
+
+![Retrieval evaluation with RAGAS scores, Recall at 5, pass rates and score distributions](docs/images/retrieval-evaluation.webp)
+
+<sub>Screenshots show the live interface with example data.</sub>
