@@ -6,11 +6,22 @@
 
 - Docker Engine / Docker Desktop 和 Docker Compose v2（`docker compose`）；Windows 使用 Linux 容器模式。
 - 构建机器能访问基础镜像、PyPI 和 npm，首次构建需要联网。镜像内固定 uv 0.12.22、pnpm 10.28.2；Python 使用 `uv sync --locked --no-default-groups --group backend`，前端使用 `pnpm install --frozen-lockfile`。
-- 宿主机端口 8080 可用；本机前端预览若占用该端口，需先停止或调整 Compose 的端口映射。
+- 宿主机端口 8080 和 8441 可用。端口冲突时调整 Compose 的端口映射。
 
 无需根目录 `.env`；可通过 `docker/.env` 自定义管理员认证及 PostgreSQL 密码和连接，见下文及 [数据库配置](../docs/postgresql.md)。模型与 API Key 在 Web 控制台配置。CLI 可选配置为 `cli/.env`，不复制进镜像，见 [CLI 文档](../docs/cli-reference.md)。
 
 ## 构建与启动
+
+首次部署时复制 `docker/.env.example` 为 `docker/.env`。需要网页登录和独立空间时，在文件中加入以下配置。
+
+```dotenv
+AUTH_MODE=app
+AUTH_PUBLIC_URL=http://localhost:8080
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD='替换为随机强密码'
+```
+
+公网部署将 `AUTH_PUBLIC_URL` 改为实际 HTTPS 地址，并同步更换 `POSTGRES_PASSWORD` 与 `DATABASE_URL` 中的密码。在 URL 中使用经过百分号编码的密码。参见[登录与身份提供方配置](../docs/authentication.md)。
 
 Linux / macOS（Bash）：
 
@@ -36,16 +47,16 @@ docker compose -f docker/compose.yaml logs -f
 docker compose -f docker/compose.yaml down
 ```
 
-也可直接执行 `docker compose -f docker/compose.yaml up --build -d`。API 仍仅启动一个 Uvicorn worker 和一个 API 实例，避免多个进程重复调度测试计划；质量评测由独立的 `evaluation-worker` 容器处理，性能测试、数据集构建和 AI 报告由 `worker` 容器处理。两个 worker 默认各并发 2 个任务，分别可通过 `EVALUATION_WORKER_CONCURRENCY` 和 `TASK_WORKER_CONCURRENCY` 调整。数据库已使用 PostgreSQL。API 端口不直接暴露到宿主机，通过 Nginx 的 `/api/` 转发。
+也可直接执行 `docker compose --env-file docker/.env -f docker/compose.yaml up --build -d`。API 仍仅启动一个 Uvicorn worker 和一个 API 实例，避免多个进程重复调度测试计划；质量评测由独立的 `evaluation-worker` 容器处理，性能测试、数据集构建和 AI 报告由 `worker` 容器处理。两个 worker 默认各并发 2 个任务，分别可通过 `EVALUATION_WORKER_CONCURRENCY` 和 `TASK_WORKER_CONCURRENCY` 调整。数据库已使用 PostgreSQL。API 端口不直接暴露到宿主机，通过 Nginx 的 `/api/` 转发。
 
-质量评测 worker 使用 PostgreSQL 中的持久队列领取任务。API 负责数据库初始化，worker 不执行迁移；如果需要扩展评测吞吐量，可以增加 worker 容器数量：
+两个 worker 从 PostgreSQL 持久队列领取任务。API 负责数据库初始化。可分别扩展后台和评测 worker：
 
 ```bash
 docker compose -f docker/compose.yaml up -d --scale evaluation-worker=2
 docker compose -f docker/compose.yaml up -d --scale worker=2
 ```
 
-计划调度仍由 API 进程拥有；性能压测、数据集构建和 AI 报告已经进入持久化后台队列。API 继续保持单实例、单 Uvicorn worker。
+工作进程分开运行时使用相同的数据库、认证配置及数据目录密钥。评测恢复及预算规则见[质量评测](../docs/quality-evaluations.md#持久队列与独立-worker)。
 
 ## 离线镜像包
 
@@ -93,7 +104,7 @@ volumes/
 
 Web 容器支持通过环境变量启用 Nginx HTTP Basic Auth，保护整个控制台和 `/api/`。这是单管理员的访问保护，不是应用内用户系统或 GitHub 登录。
 
-首次配置可复制 `docker/.env.example` 为 `docker/.env`；已有文件只追加或修改以下两项，**不要覆盖现有数据库密码**：
+在现有 `docker/.env` 中设置以下两项，保留已配置的数据库密码。
 
 ```dotenv
 ADMIN_USERNAME=admin
@@ -117,7 +128,7 @@ docker compose -f docker/compose.yaml up -d --no-build --force-recreate web
 
 后端不读取 `.env`。`DATABASE_URL` 在 Compose 中配置；`BENCHMARK_SECRET_KEY`、`BENCHMARK_CORS_ORIGINS` 等通过 API 服务的 `environment` 或 Compose override 注入。使用 override 时需手动传两个 `-f` 参数，当前脚本只加载基础 Compose。请妥善保管加密主密钥，不要随意更换。
 
-app 模式提供共享工作区的用户身份与服务端会话，但不提供多租户或细粒度角色。公网仍需 HTTPS 和访问限制，任何登录方式都不能替代 HTTPS。
+app 模式使用服务端会话，提供个人空间、团队及 Owner、管理员和成员角色。公网部署使用 HTTPS 并限制后端直接访问。参见[空间与权限](../docs/tenancy.md)。
 
 ## 认证验证
 

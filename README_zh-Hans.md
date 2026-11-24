@@ -2,7 +2,7 @@
 
 AI 模型测试与分析平台：验证服务、对比性能，让测试结果更容易理解。
 
-[English](README.md) · [快速开始](#快速开始) · [账号与空间](#账号与空间) · [命令行测试](#命令行测试) · [相关文档](#相关文档)
+[English](README.md) · [快速开始](#快速开始) · [账号与空间](#账号与空间) · [命令行测试](#命令行测试) · [文档索引](docs/README.md)
 
 PrismLab 连接你已经部署或购买的模型服务，不负责部署模型。通过 Web 控制台进行交互测试、管理可重复运行的测试计划，也可以使用 CLI 进行轻量并发压测。
 
@@ -34,66 +34,25 @@ Web 应用使用 **PostgreSQL**，SQLite 仅可作为一次性迁移工具的数
 
 ### 方式一：Docker 部署
 
-准备好 Git、Docker 和 Docker Compose v2（`docker compose`）。Windows Docker Desktop 使用 Linux 容器模式，并确保宿主机 8080 端口未被占用。
-
-```bash
-git clone https://github.com/leslie2046/PrismLab.git
-cd PrismLab
-```
-
-复制示例配置：
-
-```bash
-cp docker/.env.example docker/.env
-```
-
-如需在本机启用登录页和空间隔离，修改 `docker/.env` 中的以下配置：
-
-```dotenv
-AUTH_MODE=app
-AUTH_PUBLIC_URL=http://localhost:8080
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD='替换为随机强密码'
-```
-
-然后构建镜像并启动 Web、API、质量评测 worker、通用后台 worker 和 PostgreSQL：
+在仓库根目录复制 `docker/.env.example` 为 `docker/.env`，按 [Docker 部署指南](docker/README.md) 配置账号和数据库，然后启动服务。
 
 ```bash
 docker compose --env-file docker/.env -f docker/compose.yaml up --build -d
 ```
 
-打开 **http://localhost:8080**，使用配置的本地账号登录并选择空间，再配置该空间的模型服务与密钥。公网部署须将 `AUTH_PUBLIC_URL` 改为实际 HTTPS 站点地址，并同时更换 `POSTGRES_PASSWORD` 和 `DATABASE_URL` 中的示例数据库密码；后者的密码须 URL 编码。GitHub、GitLab SSO 和关闭密码登录的配置见[登录指南](docs/authentication.md)。
-
-Compose 使用显式指定的环境文件替换变量，后端本身不读取 `.env`。不配置时默认使用 `basic` 模式，没有独立登录页或多租户；未设置密码且无密码文件时不启用认证，仅适用于受控开发环境，不可直接公开部署。
-
-常用部署命令：
-
-```bash
-docker compose --env-file docker/.env -f docker/compose.yaml logs -f
-docker compose --env-file docker/.env -f docker/compose.yaml up --build -d    # 拉取更新后重新构建
-docker compose --env-file docker/.env -f docker/compose.yaml down           # 停止服务，保留数据
-```
-
-PostgreSQL 数据保存在 Compose 的 `postgres_data` 命名卷，密钥、会话签名密钥与报告文件保存在宿主机 `docker/volumes/` 目录。升级前须同时备份两部分；**不要执行 `down -v`，除非确实要删除数据库卷。** 详见[数据与安全](#数据与安全)。
-
-如需分开构建和启动，Linux/macOS 依次执行 `bash docker/build.sh`、`bash docker/start.sh`；Windows PowerShell 依次执行 `.\docker\build.ps1`、`.\docker\start.ps1`。启动脚本使用已有镜像，不自动构建。离线镜像打包和启动排错见 [Docker 部署指南](docker/README.md)。
-
-Docker 中的 `127.0.0.1` 指向容器自身，不是宿主机。访问宿主机上的模型时，请使用 API 和两个 worker 容器都可访问的地址（例如 Docker Desktop 的 `host.docker.internal`），并检查服务监听地址与防火墙。
+打开 [http://localhost:8080](http://localhost:8080)，登录并选择空间。生产部署、离线打包与备份见 [Docker 部署指南](docker/README.md)。
 
 ### 方式二：本地开发
 
-安装 [uv](https://docs.astral.sh/uv/getting-started/installation/) **0.12.22**、[pnpm](https://pnpm.io/installation) **10.28.2**，以及 Node.js 22.12+（或 24+）。按上面的命令克隆项目。uv 自动创建 `.venv` 并选择 Python 3.12，无需手动激活虚拟环境。
-
-**终端一：启动后端**，在项目根目录执行：
+安装 [依赖管理指南](docs/dependencies.md) 所列工具并准备 [PostgreSQL](docs/postgresql.md)。从仓库根目录启动后端。
 
 ```bash
 uv sync --locked
-# 先启动 PostgreSQL 并配置 DATABASE_URL，详见 docs/postgresql.md。
 export DATABASE_URL=postgresql://prismlab:prismlab@127.0.0.1:5432/prismlab
 uv run --no-sync python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-**终端二：启动前端**：
+另开终端启动前端。
 
 ```bash
 cd frontend
@@ -101,27 +60,11 @@ pnpm install --frozen-lockfile
 pnpm run dev --host 127.0.0.1
 ```
 
-打开 **http://localhost:5173**。Vite 将 `/api` 请求转发到 8000 端口的后端；如果 Vite 使用了其他端口，请以终端显示的地址为准。
-
-应用数据通过 `DATABASE_URL` 保存到 PostgreSQL；本地密钥与报告文件默认保存在 `backend/volumes/`。参见 [PostgreSQL 配置与 SQLite 数据迁移](docs/postgresql.md)。Docker 部署还会启动质量评测 worker 和通用后台 worker；计划调度仍由 API 进程负责，因此生产后端请保持 **单 worker、单 API 实例**。
-
-本地开发默认使用无认证的 `basic` 模式。如需开发登录与空间功能，在启动后端前通过进程环境变量设置 `AUTH_MODE=app`、`AUTH_PUBLIC_URL=http://localhost:5173` 和强密码 `ADMIN_PASSWORD`。站点地址必须与前端实际访问地址一致，包括端口。
+打开 [http://localhost:5173](http://localhost:5173)。Vite 将 API 请求转发到 8000 端口。
 
 ## 账号与空间
 
-`app` 模式下，每个账号拥有仅本人可访问的个人空间。每次重新登录先选择空间；也可以通过账户菜单切换空间或创建团队。模型供应商、凭据、Dify 配置、测试计划、运行记录、AI 报告与默认分析模型均属于当前空间。新团队初始为空，不会自动共享个人配置。
-
-| 团队角色 | 权限 |
-| --- | --- |
-| Owner（所有者） | 完整团队配置、成员角色调整与移除、删除团队 |
-| 管理员 | 使用模型与测试、管理配置、邀请和移除普通成员 |
-| 普通成员 | 使用团队模型，创建、编辑和运行测试，生成 AI 报告；模型、Dify 配置和空间设置只读 |
-
-普通成员不能新增、修改、删除供应商或更改空间设置。只有当前团队的 Owner 显示“团队管理”菜单，个人空间没有团队管理，不支持所有权转让。本地 `admin` 账号不会自动获得其他个人或团队的数据访问权。
-
-邀请采用指定账号方式：对方须先登录一次，再由邀请者选择登录来源并填写准确用户名，不是昵称、主页链接或数字 ID。对方在“收到的邀请”中接受后加入团队；不提供公开邀请链接或邀请邮件。完整角色与邀请规则见[空间隔离与权限](docs/tenancy.md)。
-
-GitHub 使用 **OAuth 2.0**，GitLab 使用通用 **OIDC** 接口。所配置身份提供方的有效用户均可登录，无需用户 ID 白名单，但访问团队仍须成为成员。不同登录来源是独立身份，不按邮箱自动合并。接入步骤见 [GitHub、GitLab 与 OIDC 配置](docs/authentication.md)。
+启用应用登录后，每个账号有独立个人空间，也可加入团队。模型配置、测试计划和评测数据均属于当前空间。参见 [登录与 SSO](docs/authentication.md) 和 [个人空间、团队与权限](docs/tenancy.md)。
 
 ## 完成第一次测试
 
@@ -137,63 +80,24 @@ GitHub 使用 **OAuth 2.0**，GitLab 使用通用 **OIDC** 接口。所配置身
 
 ## LLM Playground 与 AI 报告
 
-### 交互式生成
+Playground 支持单次流式调试、独立系统提示词和按模型显示的参数。思考能力、参数映射和服务默认值见 [LLM 模型配置](docs/llm-model-configuration.md)。
 
-LLM Playground 支持系统提示词、流式回复、单独展示思考内容，以及模型专属参数。可以停止生成并保留已收到的文本。目前是 **单次请求，不携带对话历史**。
-
-- 参数能力及请求字段映射来自 [config/llm-models.yaml](config/llm-models.yaml)，无需把每个模型的控件写死在前端。
-- 思考模式、推理强度与思考预算仅对明确声明能力的模型开放；未知模型使用保守的基础兼容配置。
-- 「刷新模型能力」仅通过已接入的供应商模型列表接口补充元数据；服务没有返回的上下文上限仍显示未知。
-- **Playground 最大输出 token 数默认留空**：不发送 `max_tokens`，使用服务默认值。测试计划与 LLM CLI 仍默认 256；思考模型的输出预算可能包含推理内容，测试时应适当调整。
-- Playground 的动态参数与系统提示词尚未作为完整参数编辑器同步到测试计划、CLI 和 AI 报告。
-
-YAML 配置、参数校验及当前限制见 [LLM 模型定义与请求参数](docs/llm-model-configuration.md)。
-
-### AI 性能分析报告
-
-在 **空间设置** 中选择已配置的 LLM 作为默认分析模型（团队中由 Owner 或管理员设置）。测试结束后，进入 **运行记录 → AI 报告 → 生成报告**，手动触发分析。生成可能产生模型费用；保存默认模型不会调用它，也不会更改测试目标。
-
-报告持久化到 PostgreSQL，后续查看或下载不再调用模型。重新分析仅在成功后替换旧报告，失败时保留旧版本；删除运行记录时，其 AI 报告也会删除。
-
-分析模型只接收白名单性能统计、模型标识、输入长度与文档数量，不接收 API Key、服务地址、测试输入正文或原始错误。报告用于解释性能，不代表回答质量评估。
+在「空间设置 → AI 测试报告」设置分析模型和思考模式，再打开已结束的运行记录生成报告。报告基于性能统计并保存在 PostgreSQL。重新分析失败时保留上一次报告。
 
 ## RAG 评测数据集
 
-「评测数据集」直接使用 DeepEval SDK 构建单轮 Golden，支持 CSV / JSON / JSONL 导入导出、文档和 Dify 分段生成、种子扩写及按任务生成。可配置质量评审、问题演化和输出风格，无需另部署 DeepEval 服务。可指定条数、模型，并在空间设置中配置默认模型与可重置的构建提示词。支持样本编辑、归档、追加导入与导出；生成失败保留已有结果并支持续建。详见 [RAG 评测数据集说明](docs/rag-datasets.md)。
+从文档或 Dify 知识库生成样本，也可导入、编辑和导出数据。数据集可用于评测 LLM、Dify Chat 的 RAG 回答，或 Dify 知识库的检索结果。参见 [数据集指南](docs/rag-datasets.md) 和 [质量评测指南](docs/quality-evaluations.md)。
 
 ## 命令行测试
 
-CLI 独立于 Web 控制台：读取进程环境变量和可选的 `cli/.env`，不读取界面中保存的凭据，也不读取根目录 `.env`。
-
-在项目根目录仅安装 CLI 依赖：
+CLI 从进程环境和可选的 `cli/.env` 读取服务配置。配置端点和密钥后，从仓库根目录运行。
 
 ```bash
 uv sync --locked --only-group cli
+uv run --no-sync python -m cli.perf_llm --provider deepseek -c 1 -n 5 --json-report output/llm.json
 ```
 
-可选的 `cli/.env` 配置步骤和供应商参数见 [CLI 配置文档](docs/cli-reference.md)。不要把真实密钥直接写到命令或提交的文件里。
-
-配置好对应服务地址、模型与凭据后，选择下面 **一条** 命令开始：
-
-```bash
-uv run --no-sync python -m cli.perf_llm --provider deepseek --max-tokens 2048 -c 1 -n 5 --json-report output/llm.json
-uv run --no-sync python -m cli.perf_embedding --provider vllm --model BAAI/bge-m3 -c 1 -n 5 --json-report output/embedding.json
-uv run --no-sync python -m cli.perf_reranker --provider xinference -c 1 -n 5 --json-report output/reranker.json
-uv run --no-sync python -m cli.perf_audio --provider xinference --file audio/asr_example.wav -c 1 -n 5 --json-report output/audio.json
-uv run --no-sync python -m cli.perf_dify retrieve -c 1 -n 5 --json-report output/dify-retrieve.json
-uv run --no-sync python -m cli.perf_dify chat -c 1 -n 5 --json-report output/dify-chat.json
-```
-
-`-c` 是并发数，`-n` 是总请求数。配置验证通过后再逐步增加。完整参数可通过 `--help` 查看，例如：
-
-```bash
-uv run --no-sync python -m cli.perf_llm --help
-uv run --no-sync python -m cli.perf_dify retrieve --help
-```
-
-五个 CLI 模块均支持 JSON 导出，包含逐请求耗时、成功状态及汇总统计，不包含凭据、URL、查询文本、回复正文或原始错误。**Web 控制台目前不支持导入独立 CLI JSON。**
-
-供应商端点、环境变量及多并发测试示例见 [CLI 配置参考](docs/cli-reference.md)。
+其他能力、参数、JSON 输出及环境变量见 [CLI 配置参考](docs/cli-reference.md)。
 
 ## 如何理解指标
 
@@ -214,65 +118,12 @@ Web 控制台、CLI 终端摘要和导出 JSON 均只使用成功请求计算延
 
 ## 数据与安全
 
-- API Key 使用 Fernet 加密。可配置稳定的 `BENCHMARK_SECRET_KEY`；未设置时在数据目录生成 `secret.key`。
-- 备份前先停止后端，用 `pg_dump` 备份 **所有 PostgreSQL schema**，并备份 **整个数据目录**，包括 `secret.key`、`auth-session.key` 和报告文件。使用环境变量提供加密或会话密钥时，另行妥善保存。丢失加密密钥将无法解密已保存的凭据；仅备份 `docker/volumes/` 不包含数据库。
-- 测试计划会保存输入配置。CLI 导出与 AI 分析的数据脱敏，不代表应用全部本地数据都不含敏感输入。
-- `cli/.env` 和 `docker/.env` 已被 Git 忽略，不要提交真实凭据或公开运行数据。
-- 设置 `AUTH_MODE=app` 可启用独立登录页、管理员密码、GitHub OAuth、通用 OIDC 和服务端会话，见 [登录配置](docs/authentication.md)。每个账号拥有独立个人空间，团队通过指定用户邀请和 Owner/管理员/普通成员三级权限共享数据，见[空间隔离与权限](docs/tenancy.md)。现有数据归本地管理员个人空间。默认 `basic` 模式保留反向代理认证，不提供多租户；公网部署须配置 HTTPS 并限制后端访问。
-- Docker 使用 `docker/volumes/`，源码部署使用 `backend/volumes/`。源码路径可通过 `BENCHMARK_DATA_DIR` 覆盖；Docker 路径通过修改宿主机挂载源调整，见 [部署指南](docker/README.md)。
-- Docker 与源码部署不自动共享数据库、密钥和报告目录。租户通过 PostgreSQL schema 隔离，不是每租户独立数据库服务器；数据库和服务器管理员仍有运维访问能力，目前不提供租户资源配额或分布式调度。
+保存的凭据使用 Fernet 加密。部署和备份时一并保留 PostgreSQL、数据目录及外部配置的密钥。详见 [PostgreSQL 和备份](docs/postgresql.md) 与 [登录和会话](docs/authentication.md)。
 
 ## 开发与文档
 
-```text
-backend/    FastAPI、计划调度、持久化与模型能力
-frontend/   React Web 控制台
-docker/     Dockerfile、Compose、Nginx 与部署指南
-cli/        命令行压测模块
-shared/     供应商预设、流式客户端与报告工具
-config/     版本化 LLM 模型定义
-tests/      回归测试
-docs/       使用、架构与品牌文档
-audio/      音频测试素材
-```
-
-在项目根目录执行检查：
-
-```bash
-uv sync --locked
-TEST_DATABASE_URL=postgresql://prismlab:prismlab@127.0.0.1:5432/prismlab_test \
-  uv run --no-sync python -m unittest discover -s tests
-cd frontend
-pnpm install --frozen-lockfile
-pnpm run build
-pnpm run test:auth
-pnpm run test:workspaces
-pnpm run test:pagination
-pnpm run test:dashboard
-pnpm run test:playground
-pnpm run test:selection
-pnpm run test:documents
-```
-
-### 相关文档
-
-- [产品路线图：质量评测与 RAG 数据集](ROADMAP.md)
-- [M0 评测基础与快照 / Evaluation foundations](docs/evaluation-foundations.md)
-- [PrismLab、RAGAS 与 DeepEval 能力对比](docs/prismlab-ragas-deepeval-comparison.md)
-- [Docker 部署与打包启动脚本](docker/README.md)
-- [PostgreSQL 配置、备份与 SQLite 迁移](docs/postgresql.md)
-- [登录、GitHub OAuth 与 GitLab / OIDC](docs/authentication.md)
-- [个人空间、团队与权限](docs/tenancy.md)
-- [列表分页](docs/pagination.md)
-- [依赖管理](docs/dependencies.md)
-- [CLI 配置参考](docs/cli-reference.md)
-- [模型列表获取与区域说明](docs/model-discovery.md)
-- [LLM 模型定义与请求参数](docs/llm-model-configuration.md)
-- [项目目录划分](docs/repository-layout.md)
-- [PrismLab 品牌指南](docs/brand-guidelines.md)
+从 [文档索引](docs/README.md) 查找使用、部署与开发说明。[项目目录与运行入口](docs/repository-layout.md) 和 [依赖管理](docs/dependencies.md) 包含开发和测试命令。未完成的工作见 [路线图](ROADMAP.md)。
 
 ## 许可证
 
 [MIT](LICENSE)
-
-质量评测支持 DeepEval/RAGAS 官方评分、不可变数据版本、人工审核、评测对比和持久 worker。详见[质量评测说明](docs/quality-evaluations.md)及[路线图](ROADMAP.md)。

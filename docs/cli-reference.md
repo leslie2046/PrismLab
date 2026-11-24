@@ -67,11 +67,11 @@ Use `--provider` to select a preset. `--base-url` and `--model` override its end
 </details>
 
 <details>
-<summary>Audio transcription (Xinference, vLLM, SiliconFlow)</summary>
+<summary>Audio transcription</summary>
 
-Audio supports `--provider xinference|vllm|siliconflow`; each provider uses its own API key (`XINFERENCE_API_KEY`, `VLLM_API_KEY`, or `SILICONFLOW_API_KEY`). Configure `VLLM_AUDIO_URL`/`VLLM_AUDIO_MODEL` or `SILICONFLOW_AUDIO_URL`/`SILICONFLOW_AUDIO_MODEL`, or pass `--base-url` and `--model`. Audio here means speech-to-text, not speech synthesis. See the [vLLM transcription API](https://docs.vllm.ai/en/latest/serving/online_serving/speech_to_text/) and [SiliconFlow transcription API](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post).
+Audio supports `--provider xinference|vllm|siliconflow|qwen`. Each provider uses its own API key. Configure `VLLM_AUDIO_URL`/`VLLM_AUDIO_MODEL` or `SILICONFLOW_AUDIO_URL`/`SILICONFLOW_AUDIO_MODEL`, or pass `--base-url` and `--model`. Audio here means speech-to-text, not speech synthesis. See the [vLLM transcription API](https://docs.vllm.ai/en/latest/serving/online_serving/speech_to_text/) and [SiliconFlow transcription API](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post).
 
-`perf_audio.py` uploads the same file as `multipart/form-data` on every request to `/v1/audio/transcriptions`. The file is loaded into memory once.
+`perf_audio.py` loads the file once and sends it on every request. Xinference, vLLM, and SiliconFlow use multipart uploads. Qwen uses its native synchronous JSON endpoint with a Base64 data URL and a 10 MB file limit. Set `QWEN_API_KEY` and optionally `QWEN_AUDIO_URL` or `QWEN_AUDIO_MODEL`. See [Qwen Audio setup](model-discovery.md#千问-audio语音识别).
 
 | Setting | Default / purpose |
 | --- | --- |

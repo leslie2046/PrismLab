@@ -29,9 +29,19 @@
 | Audio 测试 | `uv run --no-sync python -m cli.perf_audio --help` |
 | Dify 测试 | `uv run --no-sync python -m cli.perf_dify chat --help` |
 | Docker 部署 | `docker compose -f docker/compose.yaml up --build -d` |
-| 回归测试 | `uv run --no-sync python -m unittest discover -s tests` |
 
 前端开发在 `frontend/` 中运行 `pnpm install --frozen-lockfile`、`pnpm run dev`。CLI 模块入口不依赖临时修改 sys.path 或调用方的 PYTHONPATH，配置详见 [CLI 文档](cli-reference.md)。
+
+## 测试
+
+用专用 PostgreSQL 数据库运行后端集成测试。
+
+```bash
+TEST_DATABASE_URL=postgresql://prismlab:prismlab@127.0.0.1:5432/prismlab_test \
+  uv run --no-sync python -m unittest discover -s tests
+```
+
+前端构建与 `test:*` 命令见 [frontend/package.json](../frontend/package.json)，运行前完成 [依赖同步](dependencies.md)。
 
 ## 持久化数据
 
