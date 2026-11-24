@@ -6,10 +6,13 @@ import { tr, type Language } from '../i18n';
 import { WorkspaceDialog } from './WorkspaceDialog';
 
 export type GenerationTab = 'prompts' | 'context';
+type GenerationTrace = NonNullable<GenerationData['trace']>;
+type GenerationStep = NonNullable<GenerationTrace['llm_requests']>[number]
+  & Pick<NonNullable<GenerationTrace['llm_request']>, 'system_prompt' | 'provider_id' | 'credential_id'>;
+
 const errorText = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 const parameterText = (value: unknown, defaultLabel: string) => value == null ? defaultLabel : typeof value === 'string' ? value : JSON.stringify(value);
-const playgroundParameters = (trace: GenerationData['trace']) => {
-  const raw = trace?.llm_request?.parameters || {};
+const playgroundParameters = (raw: Record<string, unknown> = {}) => {
   const result: Record<string, string | number> = {};
   for (const key of ['max_tokens', 'temperature', 'top_p', 'thinking_budget', 'reasoning_effort']) {
     const value = raw[key];
@@ -40,11 +43,34 @@ export function GenerationDetails({datasetId, item, initialTab, language, onClos
   const recorded = data?.availability === 'recorded';
   const contexts = data?.sample.context || [];
   const trace = data?.trace;
-  const requestMessages = trace?.llm_request?.messages || [];
-  const recordedSystemPrompt = requestMessages.find(message => message.role === 'system')?.content || trace?.llm_request?.system_prompt || trace?.prompt || '';
-  const userMessage = requestMessages.find(message => message.role === 'user')?.content || trace?.prompt || '';
-  const requestSteps = trace?.llm_requests?.length ? trace.llm_requests : (trace?.llm_request ? [{sequence: trace.llm_request.request_sequence, role: trace.llm_request.request_role || 'generation', model: trace.llm_request.model, messages: trace.llm_request.messages, parameters: trace.llm_request.parameters}] : []);
+  const requestSteps: GenerationStep[] = trace?.llm_requests?.length ? trace.llm_requests : trace?.llm_request ? [{
+    ...trace.llm_request,
+    sequence: trace.llm_request.request_sequence,
+    role: trace.llm_request.request_role || 'generation',
+  }] : [];
   const stepLabel = (role?: string) => role === 'quality_review' ? t('审查') : role === 'rewrite' ? t('改写') : role === 'answer_generation' ? t('回答生成') : t('生成');
+  function openStepInPlayground(request: GenerationStep, query: string) {
+    if (!trace || !onPlayground) return;
+    const reviewing = request.role === 'quality_review';
+    const snapshot = reviewing ? trace.models.critic : trace.models.generator;
+    const options = trace.options?.[reviewing ? 'critic_llm' : 'llm'];
+    const selection = snapshot?.selection
+      ?? (options && typeof options === 'object' ? options as NonNullable<typeof snapshot>['selection'] : undefined)
+      ?? (reviewing && !snapshot ? trace.models.generator?.selection : undefined);
+    // The catalog uses configured aliases, which can differ from the wire model name.
+    const model = snapshot?.model && request.model && snapshot.model !== request.model
+      ? request.model : selection?.model || request.model || snapshot?.model;
+    onPlayground({
+      systemPrompt: request.messages?.find(message => message.role === 'system')?.content ?? request.system_prompt ?? '',
+      query,
+      providerId: selection?.id || (reviewing ? undefined : request.provider_id),
+      model,
+      credentialId: selection?.credential_id || (reviewing ? undefined : request.credential_id),
+      parameters: playgroundParameters(request.parameters),
+    });
+    onClose();
+  }
+
   return <WorkspaceDialog className="dataset-generation-dialog" title={t('样本生成详情')} busy={false} language={language} onClose={onClose}>
     <div className="workspace-dialog-body dataset-generation-body">
       <p className="generation-question">{item.input}</p>
@@ -64,7 +90,31 @@ export function GenerationDetails({datasetId, item, initialTab, language, onClos
         {recorded && trace?.llm_request?.request_match === 'batch_snapshot' && <p className="generation-notice" role="status">{t('未在已保存的模型请求中找到当前样本的精确问题或上下文匹配，可能是旧版批量记录。')}</p>}
         {tab === 'prompts' && <div role="tabpanel" id="generation-prompts-panel" aria-labelledby="generation-prompts-tab">
           {trace ? <>
-            <section className="generation-section"><h3>{t('生成步骤')}</h3><div className="generation-step-list">{requestSteps.map((request, index) => <article className="generation-step" key={`${request.sequence ?? index}-${request.role}`}><header><strong>{index + 1}. {stepLabel(request.role)}</strong>{request.model && <span>{request.model}</span>}</header><div className="generation-message-list">{(request.messages || []).map((message, messageIndex) => <article className={`generation-message-card generation-message-${message.role}`} key={`${message.role}-${messageIndex}`}><strong>{message.role}</strong><pre>{message.content}</pre></article>)}</div>{request.parameters && <details><summary>{t('调用参数')}</summary><pre>{JSON.stringify(request.parameters, null, 2)}</pre></details>}</article>)}</div></section>
+            <section className="generation-section">
+              <h3>{t('生成步骤')}</h3>
+              <div className="generation-step-list">{requestSteps.map((request, index) => {
+                const label = `${index + 1}. ${stepLabel(request.role)}`;
+                const userMessage = request.messages?.find(message => message.role === 'user')?.content;
+                return <article className="generation-step" key={`${request.sequence ?? index}-${request.role}`}>
+                  <header>
+                    <strong>{label}</strong>
+                    <div className="generation-step-actions">
+                      {request.model && <span>{request.model}</span>}
+                      {onPlayground && <button type="button" className="ghost compact" disabled={!userMessage}
+                        aria-label={`${label} · ${t('到Playground调试')}`}
+                        onClick={() => userMessage && openStepInPlayground(request, userMessage)}
+                      ><FlaskConical aria-hidden="true" />{t('到Playground调试')}</button>}
+                    </div>
+                  </header>
+                  <div className="generation-message-list">{(request.messages || []).map((message, messageIndex) => (
+                    <article className={`generation-message-card generation-message-${message.role}`} key={`${message.role}-${messageIndex}`}>
+                      <strong>{message.role}</strong><pre>{message.content}</pre>
+                    </article>
+                  ))}</div>
+                  {request.parameters && <details><summary>{t('调用参数')}</summary><pre>{JSON.stringify(request.parameters, null, 2)}</pre></details>}
+                </article>;
+              })}</div>
+            </section>
             <section className="generation-section"><h3>{t('调用大模型参数')}</h3>{trace.llm_request ? <>
               <dl className="generation-parameter-list"><div><dt>{t('模型')}</dt><dd>{trace.llm_request.model || '—'}</dd></div>{Object.entries(trace.llm_request.parameter_details || trace.llm_request.parameters || {}).map(([name, detail]) => {
                 const value = typeof detail === 'object' && detail !== null && 'value' in detail ? (detail as {value?: unknown}).value : detail;
@@ -80,6 +130,6 @@ export function GenerationDetails({datasetId, item, initialTab, language, onClos
         </div>}
       </>}
     </div>
-    <div className="workspace-dialog-footer">{onPlayground && <button type="button" className="primary" disabled={!trace} onClick={() => { if (!trace) return; const generator = trace.models.generator; const selection = generator && 'selection' in generator && generator.selection && typeof generator.selection === 'object' ? generator.selection as {id?: string; model?: string; credential_id?: string} : undefined; onPlayground({systemPrompt: recordedSystemPrompt, query: userMessage || data?.sample.input || '', providerId: selection?.id || trace.llm_request?.provider_id, model: selection?.model || trace.llm_request?.model || generator?.model, credentialId: selection?.credential_id || trace.llm_request?.credential_id, parameters: playgroundParameters(trace)}); onClose(); }}><FlaskConical aria-hidden="true" />{t('到Playground调试')}</button>}<button type="button" className="ghost" onClick={onClose}>{t('关闭')}</button></div>
+    <div className="workspace-dialog-footer"><button type="button" className="ghost" onClick={onClose}>{t('关闭')}</button></div>
   </WorkspaceDialog>;
 }

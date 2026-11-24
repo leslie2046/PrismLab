@@ -23,8 +23,11 @@
 .workspace-dialog.evaluation-start-confirm { width:min(560px,calc(100vw - 32px)); }
 .generation-step-list { display:grid; gap:12px; }
 .generation-step { border:1px solid var(--border); border-radius:8px; padding:12px; background:var(--surface-subtle); }
-.generation-step > header { display:flex; justify-content:space-between; gap:12px; margin-bottom:10px; color:var(--foreground); }
-.generation-step > header span { color:var(--muted-foreground); font-size:12px; }
+.generation-step > header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 12px; margin-bottom:10px; color:var(--foreground); }
+.generation-step-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px 12px; min-width:0; margin-left:auto; }
+.generation-step-actions span { color:var(--muted-foreground); font-size:12px; overflow-wrap:anywhere; }
+.generation-step-actions button { white-space:nowrap; }
+@media (max-width:600px) { .generation-step-actions button { min-height:44px; } }
 .generation-step details { margin-top:10px; }
 .evaluation-confirm-parameters { display:grid; gap:12px; margin:0; }
 .evaluation-confirm-parameters > div { display:grid; grid-template-columns:120px minmax(0,1fr); gap:12px; padding-bottom:10px; border-bottom:1px solid var(--border); }
