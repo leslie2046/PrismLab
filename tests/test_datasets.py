@@ -221,6 +221,45 @@ class DatasetApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(path).status_code, 404)
         self.assertEqual(self.client.get(path + '/items').status_code, 404)
 
+    def test_reference_chunk_filter_applies_before_pagination_and_selection(self):
+        identifier = self.create()
+        path = f'/api/datasets/{identifier}/items'
+        self.repo.add(identifier, [
+            {'input': 'Other zero'},
+            {'input': 'Other empty\u0000', 'context': []},
+            {'input': 'Match one', 'context': ['one']},
+            {'input': 'Match two', 'context': ['one', 'two']},
+            {'input': 'Match another two', 'context': ['one', 'two']},
+            {'input': 'Other two', 'context': ['one', 'two']},
+            {'input': 'Match six', 'context': ['chunk'] * 6},
+        ])
+        items = self.client.get(path).json()['items']
+        by_input = {item['input']: item['id'] for item in items}
+        filters = {'q': '"Match', 'context_count': 2}
+
+        result = self.client.get(path, params={**filters, 'page_size': 1, 'page': 3}).json()
+        self.assertEqual(result['context_counts'], [0, 1, 2, 6])
+        self.assertEqual(result['total'], 2)
+        self.assertEqual(result['page'], 2)
+        self.assertEqual(len(result['items']), 1)
+        selection = self.client.get(path + '/selection', params=filters).json()
+        self.assertEqual(set(selection['ids']), {by_input['Match two'], by_input['Match another two']})
+        self.assertIn(result['items'][0]['id'], selection['ids'])
+        self.assertEqual(self.client.get(path, params={'context_count': 0}).json()['total'], 2)
+        self.assertEqual(self.client.get(path, params={'context_count': 3}).json()['total'], 0)
+        self.assertEqual(self.client.get(path, params={'context_count': -1}).status_code, 422)
+
+        warnings = [{'sample_id': by_input[name]} for name in ('Match one', 'Match two', 'Other two')]
+        with patch('backend.dataset_routes.quality_report', return_value={'annotation_warnings': warnings}) as report:
+            filters['quality'] = 'omission'
+            result = self.client.get(path, params=filters).json()
+            selection = self.client.get(path + '/selection', params=filters).json()
+            self.assertEqual(result['context_counts'], [0, 1, 2, 6])
+            self.assertEqual(result['total'], 1)
+            self.assertEqual([item['id'] for item in result['items']], selection['ids'])
+            self.assertEqual(selection, {'ids': [by_input['Match two']], 'total': 1})
+            self.assertEqual(len(report.call_args.args[0]), 7)
+
     def test_import_is_atomic_and_append_is_validated(self):
         response = self.client.post('/api/datasets/import', data={'name': 'Broken'}, files={'file': ('a.json', b'[{"input":"ok"},{}]')})
         self.assertEqual(response.status_code, 400)

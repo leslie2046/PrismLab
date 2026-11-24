@@ -1044,6 +1044,8 @@ Object.assign(english, {
   "条": "items",
   "条样本存在疑似遗漏": "samples may have omissions",
   "筛选质量问题": "Filter quality issues",
+  "参考片段数": "Reference chunk count",
+  "1 个片段": "1 chunk",
   "全部样本": "All samples",
   "有质量问题": "With quality issues",
   "疑似重复": "Possible duplicates",

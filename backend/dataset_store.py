@@ -9,6 +9,16 @@ from backend.dataset_golden import canonical_item
 from shared.request_control import GenerationStopped
 
 
+ITEM_SEARCH = "dataset_id=%s AND strpos(lower(payload), lower(%s))>0"
+# PostgreSQL JSONB rejects escaped NUL characters even in unrelated string fields.
+# Substitute them only in the copy used to count array entries.
+ITEM_CONTEXT_COUNT = """(SELECT CASE WHEN jsonb_typeof(context) = 'array'
+    THEN jsonb_array_length(context) ELSE 0 END
+    FROM (SELECT coalesce(item->'context', item->'reference_contexts', item->'contexts') AS context
+          FROM (SELECT replace(payload, chr(92) || 'u0000', chr(92) || 'uFFFD')::jsonb AS item) AS saved_item
+    ) AS saved_context)"""
+
+
 class DatasetStore:
     def __init__(self, store):
         self.store = store
@@ -48,16 +58,27 @@ class DatasetStore:
         configs = {item['id']: item for item in self.store.list_service_configs() if item.get('provider') == 'dify'}
         return {item['id']: summarize_sources(chunks.get(item['id'], []), item, configs) for item in datasets}
 
-    def items(self, identifier, page=1, size=20, q=""):
+    def items(self, identifier, page=1, size=20, q="", *, context_count=None, include_context_counts=False):
         self.get(identifier)
         with self.store._session() as connection:
             connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            args = (identifier, q)
-            where = "dataset_id=%s AND strpos(lower(payload), lower(%s))>0"
+            where, args = self._item_search(identifier, q, context_count)
             total = connection.execute("SELECT count(*) AS n FROM dataset_items WHERE " + where, args).fetchone()['n']
             page = min(page, max(1, (total + size - 1) // size))
             rows = connection.execute("SELECT payload FROM dataset_items WHERE " + where + " ORDER BY created_at,id LIMIT %s OFFSET %s", (*args, size, (page - 1) * size)).fetchall()
-        return {"items": [canonical_item(json.loads(r['payload'])) for r in rows], "total": total, "page": page, "page_size": size}
+            context_counts = {}
+            if include_context_counts:
+                counts = connection.execute(f"""SELECT DISTINCT {ITEM_CONTEXT_COUNT} AS n
+                    FROM dataset_items WHERE dataset_id=%s ORDER BY n""", (identifier,))
+                context_counts = {"context_counts": [row['n'] for row in counts]}
+        return {"items": [canonical_item(json.loads(r['payload'])) for r in rows], "total": total,
+                "page": page, "page_size": size, **context_counts}
+
+    @staticmethod
+    def _item_search(identifier, q, context_count):
+        if context_count is None:
+            return ITEM_SEARCH, (identifier, q)
+        return f"{ITEM_SEARCH} AND {ITEM_CONTEXT_COUNT}=%s", (identifier, q, context_count)
 
     def mutate(self, identifier, action, *, generating=False, build_token=None):
         with self.store._session() as connection:
@@ -168,10 +189,11 @@ class DatasetStore:
                                    (item['updated_at'], json.dumps(item, ensure_ascii=False), identifier, item_id))
         return self.mutate(identifier, action)
 
-    def selection(self, identifier, q=""):
+    def selection(self, identifier, q="", *, context_count=None):
         self.get(identifier)
+        where, args = self._item_search(identifier, q, context_count)
         with self.store._session() as connection:
-            rows = connection.execute("SELECT id FROM dataset_items WHERE dataset_id=%s AND strpos(lower(payload), lower(%s))>0 ORDER BY id", (identifier, q)).fetchall()
+            rows = connection.execute("SELECT id FROM dataset_items WHERE " + where + " ORDER BY id", args).fetchall()
         return {"ids": [row['id'] for row in rows], "total": len(rows)}
 
     def bulk_items(self, identifier, ids, operation):

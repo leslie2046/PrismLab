@@ -6,6 +6,13 @@ import type { PageResult } from './pagination';
 import { providerDisplayName } from './providerPresets';
 import type { Language } from './i18n';
 
+export type DatasetItemPage = PageResult<DatasetItem> & { context_counts?: number[] };
+type ItemQuality = 'all' | 'issues' | 'omission';
+
+function itemFilters(q: string, quality: ItemQuality, contextCount: string) {
+  return { q, quality, ...(contextCount !== '' ? { context_count: contextCount } : {}) };
+}
+
 async function call<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const multipart = body instanceof FormData;
   const response = await authenticatedFetch(`/api/${path}`, { method, signal,
@@ -21,11 +28,11 @@ export const datasetApi = {
   list: (page: number, size: number, q: string, signal?: AbortSignal, purpose = '') => call<PageResult<Dataset>>(`datasets?${new URLSearchParams({ page: String(page), page_size: String(size), q, ...(purpose ? {purpose} : {}) })}`, 'GET', undefined, signal),
   bulk: (action: 'delete', ids: string[]) => call<BulkResult>('datasets/bulk', 'POST', { action, ids }),
   get: (id: string, signal?: AbortSignal) => call<Dataset>(`datasets/${id}`, 'GET', undefined, signal),
-  items: (id: string, page: number, size: number, q: string, signal?: AbortSignal, quality: 'all' | 'issues' | 'omission' = 'all') => call<PageResult<DatasetItem>>(`datasets/${id}/items?${new URLSearchParams({ page: String(page), page_size: String(size), q, quality })}`, 'GET', undefined, signal),
+  items: (id: string, page: number, size: number, q: string, signal?: AbortSignal, quality: ItemQuality = 'all', contextCount = '') => call<DatasetItemPage>(`datasets/${id}/items?${new URLSearchParams({ page: String(page), page_size: String(size), ...itemFilters(q, quality, contextCount) })}`, 'GET', undefined, signal),
   generation: (id: string, itemId: string, signal?: AbortSignal) => call<GenerationDetails>(`datasets/${id}/items/${itemId}/generation`, 'GET', undefined, signal),
   generationRequests: (id: string, itemId: string, page: number, size: number, signal?: AbortSignal) => call<PageResult<GenerationRequestSummary>>(`datasets/${id}/items/${itemId}/generation/requests?page=${page}&page_size=${size}`, 'GET', undefined, signal),
   generationRequest: (id: string, itemId: string, requestId: string, signal?: AbortSignal) => call<GenerationRequest>(`datasets/${id}/items/${itemId}/generation/requests/${requestId}`, 'GET', undefined, signal),
-  itemSelection: (id: string, q: string) => call<SelectionSnapshot>(`datasets/${id}/items/selection?${new URLSearchParams({ q })}`),
+  itemSelection: (id: string, q: string, quality: ItemQuality = 'all', contextCount = '') => call<SelectionSnapshot>(`datasets/${id}/items/selection?${new URLSearchParams(itemFilters(q, quality, contextCount))}`),
   bulkItems: (id: string, action: 'enable' | 'archive' | 'delete', ids: string[]) => call<BulkResult>(`datasets/${id}/items/bulk`, 'POST', { action, ids }),
   create: (value: { name: string; description: string; evaluation_purpose?: 'rag' | 'retrieval' | 'both' }) => call<Dataset>('datasets', 'POST', value),
   import: (form: FormData) => call<Dataset>('datasets/import', 'POST', form),

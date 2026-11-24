@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Archive, Activity, CheckCircle2, ArrowLeft, Database, Download, FileUp, Pencil, Plus, RefreshCw, Search, Settings2, Sparkles, Trash2 } from 'lucide-react';
 import type { Catalog, Dataset, DatasetItem, DatasetSettings, DatasetSources, LlmSelection } from '../types';
 import type { PageResult } from '../pagination';
-import { datasetApi, downloadBlob, embeddingChoices, llmChoices, selectionValue } from '../datasetApi';
+import { datasetApi, downloadBlob, embeddingChoices, llmChoices, selectionValue, type DatasetItemPage } from '../datasetApi';
 import { tr, type Language } from '../i18n';
 import { GenerationDetails, type GenerationTab } from './GenerationDetails';
 import { PageHeader } from './PageHeader';
@@ -47,12 +47,13 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
   const confirm = useConfirm();
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [list, setList] = useState(emptyPage<Dataset>);
-  const [items, setItems] = useState(emptyPage<DatasetItem>);
+  const [items, setItems] = useState<DatasetItemPage>(emptyPage<DatasetItem>);
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(10);
   const [q, setQ] = useState('');
   const [query, setQuery] = useState('');
   const [qualityFilter, setQualityFilter] = useState<'all' | 'omission'>('all');
+  const [contextCount, setContextCount] = useState('');
   const [purpose, setPurpose] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -80,11 +81,15 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     ...(sources?.items || dataset?.data_sources || []).filter(source => source.kind === 'dify')
       .map(source => source.config_id || source.dataset_id || source.name),
   ]).size;
-  const selection = useBulkSelection(JSON.stringify([id, q]));
+  const selection = useBulkSelection(JSON.stringify([id, q, qualityFilter, contextCount]));
   const datasetSelection = useBulkSelection(JSON.stringify(['dataset-list', purpose, query]));
   const selectionDisabled = busy || generating || loading || !!error || q !== query;
   const datasetSelectionDisabled = busy || loading || !!error || datasetSelection.busy;
   const pageIds = items.items.map(item => item.id);
+  const storedContextCounts = items.context_counts ?? [];
+  const contextCounts = contextCount !== '' && !storedContextCounts.includes(Number(contextCount))
+    ? [...storedContextCounts, Number(contextCount)].sort((a, b) => a - b)
+    : storedContextCounts;
   const datasetPageIds = list.items.map(item => item.id);
   const pageChecked = pageIds.length > 0 && pageIds.every(id => selection.ids.has(id));
   const pageMixed = !pageChecked && pageIds.some(id => selection.ids.has(id));
@@ -93,14 +98,14 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     const controller = new AbortController();
     let active = true;
     setLoading(true); setError('');
-    const work = id ? Promise.all([datasetApi.get(id, controller.signal), datasetApi.items(id, page, size, query, controller.signal, qualityFilter), datasetApi.sources(id, controller.signal)]) : datasetApi.list(page, size, query, controller.signal, purpose);
+    const work = id ? Promise.all([datasetApi.get(id, controller.signal), datasetApi.items(id, page, size, query, controller.signal, qualityFilter, contextCount), datasetApi.sources(id, controller.signal)]) : datasetApi.list(page, size, query, controller.signal, purpose);
     work.then(value => {
       if (!active) return;
       if (Array.isArray(value)) { setDataset(value[0]); setItems(value[1]); setSources(value[2]); if (value[1].page !== page) setPage(value[1].page); }
       else { setList(value); if (value.page !== page) setPage(value.page); }
     }).catch(reason => { if (active && reason.name !== 'AbortError') setError(message(reason)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; controller.abort(); };
-  }, [id, page, size, query, qualityFilter, reload, purpose]);
+  }, [id, page, size, query, qualityFilter, contextCount, reload, purpose]);
   useEffect(() => {
     if (!id || !generating) return;
     const controller = new AbortController();
@@ -110,7 +115,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
       try {
         const [value, nextItems, nextSources] = await Promise.all([
           datasetApi.get(id!, controller.signal),
-          datasetApi.items(id!, page, size, query, controller.signal, qualityFilter),
+          datasetApi.items(id!, page, size, query, controller.signal, qualityFilter, contextCount),
           datasetApi.sources(id!, controller.signal),
         ]);
         if (!active) return;
@@ -133,7 +138,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     setProgressError('');
     timer = setTimeout(() => void poll(), 1000);
     return () => { active = false; controller.abort(); clearTimeout(timer); };
-  }, [id, generating, page, size, query, qualityFilter]);
+  }, [id, generating, page, size, query, qualityFilter, contextCount]);
   const listGenerating = !id && list.items.some(value => value.status === 'generating');
   useEffect(() => {
     if (!listGenerating) return;
@@ -153,7 +158,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     return () => { active = false; controller.abort(); clearTimeout(timer); };
   }, [listGenerating, page, size, query, purpose]);
   useEffect(() => { onDatasetChange?.(dataset?.name || null); }, [dataset?.name, onDatasetChange]);
-  function open(value: Dataset | null) { setSourceMessage(''); setSourceError(''); setDetailTab('samples'); setSettingsSection('basic'); setSaved(''); setSources(null); setDataset(value); setItems(emptyPage()); setPage(1); setQ(''); setQuery(''); setQualityFilter('all'); setError(''); datasetSelection.clear(); }
+  function open(value: Dataset | null) { setSourceMessage(''); setSourceError(''); setDetailTab('samples'); setSettingsSection('basic'); setSaved(''); setSources(null); setDataset(value); setItems(emptyPage()); setPage(1); setQ(''); setQuery(''); setQualityFilter('all'); setContextCount(''); setError(''); datasetSelection.clear(); }
   async function act(action: () => Promise<unknown>) {
     setBusy(true); setError('');
     try { await action(); setReload(value => value + 1); }
@@ -235,14 +240,24 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     {<div hidden={!!dataset && detailTab !== 'samples'} id="dataset-samples" role={dataset ? 'tabpanel' : undefined} aria-labelledby={dataset ? 'dataset-samples-tab' : undefined}>
     {dataset?.error && <div className="dataset-feedback warning" role="alert"><span>{dataset.error}</span>{dataset.status === 'failed' && <button type="button" className="ghost" disabled={busy} onClick={() => void act(async () => setDataset(await datasetApi.retry(dataset.id)))}><RefreshCw aria-hidden="true" />{t('继续构建')}</button>}</div>}
 
-    <div className="dataset-toolbar">{dataset && <label className="filter-control dataset-quality-filter"><select aria-label={t('筛选质量问题')} value={qualityFilter} onChange={event => {setQualityFilter(event.target.value as typeof qualityFilter);setPage(1);selection.clear();}}><option value="all">{t('全部样本')}</option><option value="omission">{t('疑似遗漏')}</option></select></label>}{!dataset && <label className="filter-control"><select aria-label={t('筛选数据集用途')} value={purpose} onChange={e => {setPurpose(e.target.value);setPage(1);}}><option value="">{t('全部用途')}</option>{Object.entries(datasetPurposeLabels).map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>}<label className="dataset-search"><Search aria-hidden="true" /><input aria-label={t(id ? '搜索数据项' : '搜索数据集')} placeholder={t(id ? '搜索数据项' : '搜索数据集')} value={q} maxLength={200} onChange={event => setQ(event.target.value)} /></label><button type="button" className="ghost" disabled={loading} onClick={() => setReload(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button></div>
+    <div className="dataset-toolbar">
+      {dataset ? <>
+        <label className="filter-control dataset-quality-filter"><select aria-label={t('筛选质量问题')} value={qualityFilter} onChange={event => { setQualityFilter(event.target.value as typeof qualityFilter); setPage(1); }}><option value="all">{t('全部样本')}</option><option value="omission">{t('疑似遗漏')}</option></select></label>
+        <label className="filter-control"><select aria-label={t('参考片段数')} value={contextCount} onChange={event => { setContextCount(event.target.value); setPage(1); }}>
+          <option value="">{t('参考片段数')}</option>
+          {contextCounts.map(count => <option key={count} value={count}>{count === 1 ? t('1 个片段') : `${count} ${t('个片段')}`}</option>)}
+        </select></label>
+      </> : <label className="filter-control"><select aria-label={t('筛选数据集用途')} value={purpose} onChange={e => {setPurpose(e.target.value);setPage(1);}}><option value="">{t('全部用途')}</option>{Object.entries(datasetPurposeLabels).map(([value,label])=><option key={value} value={value}>{t(label)}</option>)}</select></label>}
+      <label className="dataset-search"><Search aria-hidden="true" /><input aria-label={t(id ? '搜索数据项' : '搜索数据集')} placeholder={t(id ? '搜索数据项' : '搜索数据集')} value={q} maxLength={200} onChange={event => setQ(event.target.value)} /></label>
+      <button type="button" className="ghost" disabled={loading} onClick={() => setReload(value => value + 1)}><RefreshCw aria-hidden="true" />{t('刷新')}</button>
+    </div>
     {!dataset && <BulkSelectionBar selection={datasetSelection} language={language}>
       <button type="button" className="ghost" disabled={datasetSelectionDisabled || !datasetPageIds.length} onClick={() => datasetSelection.toggle(datasetPageIds, true)}>{t('全选当前页')}</button>
       <button type="button" className="ghost" disabled={datasetSelection.busy} onClick={datasetSelection.clear}>{t('全不选')}</button>
       <button type="button" className="ghost danger" disabled={datasetSelectionDisabled} onClick={() => void bulkDatasets()}><Trash2 aria-hidden="true" />{t('批量删除')}</button>
     </BulkSelectionBar>}
     {dataset && <BulkSelectionBar selection={selection} language={language}>
-      <button className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void selection.selectAll(() => datasetApi.itemSelection(dataset.id, query))}>{t('全选全部匹配记录')}</button>
+      <button className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void selection.selectAll(() => datasetApi.itemSelection(dataset.id, query, qualityFilter, contextCount))}>{t('全选全部匹配记录')}</button>
       <button className="ghost" disabled={selection.busy} onClick={selection.clear}>{t('全不选')}</button>
       <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => setExportIds([...selection.ids])}><Download aria-hidden="true" />{t('批量导出')}</button>
       <button type="button" className="ghost" disabled={selectionDisabled || selection.busy} onClick={() => void bulkItems('enable')}><CheckCircle2 aria-hidden="true" />{t('批量启用')}</button>
@@ -252,7 +267,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     {error && <div className="dataset-feedback error" role="alert">{error}<button type="button" className="ghost" onClick={() => setReload(value => value + 1)}>{t('重试')}</button></div>}
     {loading && <p className="pagination-feedback" role="status">{t('加载中…')}</p>}
     {dataset ? <div className="dataset-sample-list" aria-busy={loading}>
-      <div className="dataset-sample-list-head"><SelectionCheckbox label={t('全选当前页')} checked={pageChecked} mixed={pageMixed} disabled={selectionDisabled || selection.busy || !pageIds.length} onChange={checked => selection.toggle(pageIds, checked)} /><span className="dataset-sample-count">{dataset.item_count} {t('条样本')}</span><span>{t('质量检查')}</span><span>{t('状态')}</span></div>
+      <div className="dataset-sample-list-head"><SelectionCheckbox label={t('全选当前页')} checked={pageChecked} mixed={pageMixed} disabled={selectionDisabled || selection.busy || !pageIds.length} onChange={checked => selection.toggle(pageIds, checked)} /><span className="dataset-sample-count">{items.total} {t('条样本')}</span><span>{t('质量检查')}</span><span>{t('状态')}</span></div>
       {items.items.map((item,index) => {
         const answer = renderValue(item.expected_output);
         const hasAnswer = hasMeaningfulAnswer(item.expected_output);
@@ -286,7 +301,7 @@ export function Datasets({ catalog, language, initialDifyConfigId, onCreateClose
     </div>}
 
 
-    {!loading && !error && !data.items.length && <EmptyState icon={Database} title={t(q ? '没有匹配的数据，请调整搜索条件。' : id ? '暂无数据项，可手动添加或导入数据集。' : '暂无数据集，导入已有数据或让 AI 从知识内容生成。')} />}
+    {!loading && !error && !data.items.length && <EmptyState icon={Database} title={t(q || (id && (qualityFilter !== 'all' || contextCount !== '')) ? '没有匹配的数据，请调整搜索条件。' : id ? '暂无数据项，可手动添加或导入数据集。' : '暂无数据集，导入已有数据或让 AI 从知识内容生成。')} />}
     <Pagination page={data.page} pageSize={size} total={data.total} language={language} label={t(id ? '数据项' : '数据集')} onPageChange={setPage} onPageSizeChange={value => { setSize(value); setPage(1); }} disabled={loading || selection.busy} />
     </div>}
     {create && <CreateDataset catalog={catalog} language={language} initialDifyConfigId={initialDifyConfigId} onClose={() => { setCreate(false); onCreateClosed?.(); }} onCreated={value => { setCreate(false); onCreateClosed?.(); open(value); setReload(n => n + 1); }} />}

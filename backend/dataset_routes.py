@@ -681,11 +681,7 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
                  build_dataset, target, identifier, chunks, dify, config, key, prompt, opts, critic, embedding, build_token=dataset['build_token'])
         return dataset
 
-    @router.get('/datasets/{identifier}/items')
-    def list_items(identifier: str, page: int = Query(1, ge=1, le=1000000000), page_size: int = Query(20, ge=1, le=100), q: str = Query('', max_length=200), quality: Literal['all', 'issues', 'omission'] = Query('all')):
-        target = repo()
-        if quality == 'all':
-            return target.items(identifier, page, page_size, q)
+    def items_with_omissions(target, identifier, q, context_count):
         # Quality status is derived from the immutable dataset/source snapshot,
         # so filter the same complete sample set used by the quality banner
         # before applying pagination. This keeps row badges and filter counts
@@ -693,13 +689,26 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         all_items = target.items(identifier, page=1, size=20000)['items']
         report = quality_report(all_items, target.sources(identifier))
         omission_ids = {str(item.get('sample_id')) for item in report['annotation_warnings'] if item.get('sample_id')}
-        selected_ids = omission_ids
         query = q.casefold().strip()
-        filtered = [item for item in all_items if item.get('id') in selected_ids and (not query or query in json.dumps(item, ensure_ascii=False).casefold())]
+        filtered = [item for item in all_items
+                    if item.get('id') in omission_ids
+                    and (context_count is None or len(item.get('context') or []) == context_count)
+                    and (not query or query in json.dumps(item, ensure_ascii=False).casefold())]
+        return filtered, sorted({len(item.get('context') or []) for item in all_items})
+
+    @router.get('/datasets/{identifier}/items')
+    def list_items(identifier: str, page: int = Query(1, ge=1, le=1000000000), page_size: int = Query(20, ge=1, le=100),
+                   q: str = Query('', max_length=200), quality: Literal['all', 'issues', 'omission'] = Query('all'),
+                   context_count: int | None = Query(None, ge=0)):
+        target = repo()
+        if quality == 'all':
+            return target.items(identifier, page, page_size, q, context_count=context_count, include_context_counts=True)
+        filtered, counts = items_with_omissions(target, identifier, q, context_count)
         total = len(filtered)
         current_page = min(page, max(1, (total + page_size - 1) // page_size))
         start = (current_page - 1) * page_size
-        return {'items': filtered[start:start + page_size], 'total': total, 'page': current_page, 'page_size': page_size}
+        return {'items': filtered[start:start + page_size], 'total': total, 'page': current_page,
+                'page_size': page_size, 'context_counts': counts}
 
     @router.get('/datasets/{identifier}/items/{item_id}/generation')
     def item_generation(identifier: str, item_id: str):
@@ -714,8 +723,14 @@ def install_dataset_routes(app, store, resolve_access, concrete_store):
         return DatasetTraceStore(repo()).request(identifier, item_id, request_id)
 
     @router.get('/datasets/{identifier}/items/selection')
-    def select_items(identifier: str, q: str = Query('', max_length=200)):
-        return repo().selection(identifier, q)
+    def select_items(identifier: str, q: str = Query('', max_length=200),
+                     quality: Literal['all', 'issues', 'omission'] = Query('all'),
+                     context_count: int | None = Query(None, ge=0)):
+        target = repo()
+        if quality == 'all':
+            return target.selection(identifier, q, context_count=context_count)
+        filtered, _ = items_with_omissions(target, identifier, q, context_count)
+        return {'ids': sorted(item['id'] for item in filtered), 'total': len(filtered)}
 
     @router.post('/datasets/{identifier}/items/bulk')
     def bulk_items(identifier: str, payload: ItemBulk):
