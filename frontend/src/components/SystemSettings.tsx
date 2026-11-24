@@ -24,6 +24,7 @@ export function SystemSettings({ catalog, language, readOnly = false, initialSec
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const choices = llmChoices(catalog, language);
   const [selected, setSelected] = useState('');
+  const [thinkingMode, setThinkingMode] = useState<'auto' | 'enabled' | 'disabled'>('auto');
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -34,7 +35,7 @@ export function SystemSettings({ catalog, language, readOnly = false, initialSec
   useEffect(() => {
     let alive = true;
     setLoading(true); setError('');
-    api.systemSettings().then(value => { if (alive) { setSelected(selectionValue(value.default_llm)); setLoaded(true); } })
+    api.systemSettings().then(value => { if (alive) { setSelected(selectionValue(value.default_llm)); setThinkingMode(value.report_thinking_mode || 'auto'); setLoaded(true); } })
       .catch(reason => { if (alive) setError(String(reason.message)); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [reload]);
@@ -51,7 +52,7 @@ export function SystemSettings({ catalog, language, readOnly = false, initialSec
       <div className="panel-head"><div><h2>{t('AI 测试报告')}</h2><p>{t('用于手动生成运行记录的 AI 测试报告，不改变测试计划中选择的模型。')}</p></div></div>
       <form className="system-settings-form" onSubmit={async event => {
         event.preventDefault(); if (readOnly || !catalog || !loaded || stale) return; setSaving(true); setError(''); setSaved(false);
-        try { await api.saveSystemSettings({ default_llm: selected ? JSON.parse(selected) : null }); setSaved(true); }
+        try { await api.saveSystemSettings({ default_llm: selected ? JSON.parse(selected) : null, report_thinking_mode: thinkingMode }); setSaved(true); }
         catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
         finally { setSaving(false); }
       }}>
@@ -60,6 +61,9 @@ export function SystemSettings({ catalog, language, readOnly = false, initialSec
           {stale && <small className="error-text" role="alert">{t('原默认模型已失效，请重新选择')}</small>}
           {catalog && !choices.length && <small className="field-help">{t('暂无已配置的 LLM，请先在模型供应商中添加。')}</small>}
         </div>
+        <label className="field"><span className="label-with-tip">{t('思考模式')}<InfoTip label={t('查看说明')} text={t('应用于支持思考模式的报告分析模型；自动表示由模型服务决定。')} /></span>
+          <select aria-label={t('思考模式')} disabled={readOnly || !catalog || !loaded || loading || saving} value={thinkingMode} onChange={event => { setThinkingMode(event.target.value as 'auto' | 'enabled' | 'disabled'); setSaved(false); }}><option value="auto">{t('自动')}</option><option value="enabled">{t('开启')}</option><option value="disabled">{t('关闭')}</option></select>
+        </label>
         {(loading || !catalog) && <p className="workspace-muted" role="status">{t('加载中…')}</p>}
         {error && <div className="alert" role="alert">{error}{!loaded && <button type="button" className="ghost compact" onClick={() => setReload(value => value + 1)}>{t('重试')}</button>}</div>}
         <div className="space-settings-footer">{!readOnly && <button className="primary compact" disabled={!catalog || !loaded || loading || saving || stale}><Save aria-hidden="true" />{t(saving ? '保存中…' : '保存配置')}</button>}{saved && <span className="success-text" role="status">{t('空间配置已保存')}</span>}</div>

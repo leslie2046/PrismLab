@@ -24,7 +24,7 @@ export type Benchmark = {
 };
 export type Catalog = { benchmarks: Benchmark[] };
 export type LlmSelection = { id: string; model: string; credential_id?: string | null };
-export type SystemSettings = { default_llm: LlmSelection | null; updated_at?: string };
+export type SystemSettings = { default_llm: LlmSelection | null; report_thinking_mode?: 'auto' | 'enabled' | 'disabled'; updated_at?: string };
 export type AiReport = { run_id: string; status: "none" | "generating" | "ready" | "failed"; content: string | null; error?: string | null; generated_at?: string; model?: { provider: string; model: string }; requested_model?: { provider: string; model: string } };
 export type PlaygroundResult = { ok: boolean; status_code: number; duration_ms: number; data: unknown; truncated: boolean };
 export type LlmParameter = { type: "integer" | "number" | "enum"; label: string; description: string; min?: number; max?: number; step?: number; default?: string | number; values: string[]; enabled_when: Record<string, string> };

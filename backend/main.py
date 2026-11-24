@@ -875,7 +875,7 @@ def update_system_settings(payload: SystemSettingsUpdate) -> dict:
         model = next((item for item in matching if selection["model"] and item.get("alias") == selection["model"]), None)
         model = model or next(item for item in matching if not selection["model"] or item.get("name") == selection["model"])
         selection.update(model=model.get("alias") or model["name"], credential_id=config.get("credential_id"))
-    return store.save_system_settings({"default_llm": selection})
+    return store.save_system_settings({"default_llm": selection, "report_thinking_mode": payload.report_thinking_mode})
 
 
 @app.get("/api/runs/{run_id}/ai-report")

@@ -17,6 +17,7 @@ class ProviderSelection(BaseModel):
 
 class SystemSettingsUpdate(BaseModel):
     default_llm: ProviderSelection | None = None
+    report_thinking_mode: Literal['auto', 'enabled', 'disabled'] = 'auto'
 
 
 class AiReportRequest(BaseModel):
